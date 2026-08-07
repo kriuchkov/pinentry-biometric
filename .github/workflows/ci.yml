@@ -29,9 +29,13 @@ jobs:
         include:
           # README promises both architectures; building universal is not the
           # same as knowing each slice runs, so test on real hardware of each.
-          - os: macos-14
+          # macos-13 was retired in December 2025 — a job referencing a label
+          # that no longer exists queues forever instead of failing, so keep
+          # these current. GitHub drops Intel entirely when macOS 15 retires
+          # (autumn 2027); the x86_64 slice becomes build-only after that.
+          - os: macos-15
             arch: Apple Silicon
-          - os: macos-13
+          - os: macos-15-intel
             arch: Intel
     steps:
       - uses: actions/checkout@v4
@@ -69,7 +73,7 @@ jobs:
 
   analyze:
     name: clang static analyzer
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
