@@ -4,5 +4,10 @@ build/
 *.o
 *.dSYM/
 
+# clang --analyze drops one <source>.plist report per file into the working
+# directory unless -Xclang -analyzer-output=text is passed (CI passes it).
+# Scoped to the root so a real plist elsewhere in the tree is not masked.
+/*.plist
+
 # macOS
 .DS_Store
