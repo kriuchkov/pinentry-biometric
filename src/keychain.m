@@ -103,28 +103,31 @@ kc_status keychain_lookup(const char *keygrip, const char *reason,
     *out_pw = NULL;
     *out_len = 0;
     @autoreleasepool {
-        /* Existence probe first: attributes are not ACL-protected, so this
-         * avoids a pointless Touch ID dialog when nothing is saved yet.
-         * kSecUseAuthenticationUI suppresses the keychain-unlock panel that
-         * would otherwise appear here if the login keychain is locked —
-         * treat that case as "present, needs unlock" and go on to
-         * authenticate rather than surprising the user with a password
-         * prompt before any user-presence check. */
+        /* Existence probe: attributes are not ACL-protected, so this asks
+         * "is anything saved for this keygrip" without spending a Touch ID
+         * prompt on a key we have never stored.
+         *
+         * The probe is advisory only, and every failure — including the user
+         * dismissing the keychain-unlock panel that macOS raises here when
+         * the login keychain is locked — degrades to the first-entry prompt.
+         * Reporting KC_CANCELED instead would abort GETPIN and leave the
+         * user with no way to enter the passphrase at all.
+         *
+         * (An LAContext with interactionNotAllowed does NOT silence that
+         * panel: that property is honoured by the data-protection keychain,
+         * and this item deliberately lives in the file-based one.) */
         NSMutableDictionary *probe = base_query(keygrip);
         if (!probe)
             return KC_ERROR;
         probe[(__bridge id)kSecReturnAttributes] = @YES;
         probe[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
-        LAContext *quiet = [LAContext new];
-        quiet.interactionNotAllowed = YES;
-        probe[(__bridge id)kSecUseAuthenticationContext] = quiet;
         CFTypeRef attrs = NULL;
         OSStatus st = SecItemCopyMatching((__bridge CFDictionaryRef)probe,
                                           &attrs);
         if (attrs)
             CFRelease(attrs);
-        if (st != errSecSuccess && st != errSecInteractionNotAllowed)
-            return map_status(st);
+        if (st != errSecSuccess)
+            return KC_NOT_FOUND;
 
         kc_status auth = authenticate(reason, ac);
         if (auth != KC_OK)
@@ -138,6 +141,11 @@ kc_status keychain_lookup(const char *keygrip, const char *reason,
         if (st != errSecSuccess)
             return map_status(st);
 
+        /* errSecSuccess with a NULL result is possible (a zero-length item,
+         * which keychain_store permits); CFGetTypeID(NULL) would crash us
+         * mid-GETPIN and gpg-agent would see the pinentry die, not an ERR. */
+        if (res == NULL)
+            return KC_ERROR;
         if (CFGetTypeID(res) != CFDataGetTypeID()) {
             CFRelease(res);
             return KC_ERROR;

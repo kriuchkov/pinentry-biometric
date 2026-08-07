@@ -129,12 +129,20 @@ static int fb_command(int wfd, int rfd, const char *cmdline)
     }
 }
 
-/* SET* forwarding; empty fields are skipped (not an error). */
+/* SET* forwarding; empty fields are skipped (not an error).
+ *
+ * The child enforces the same 1000-byte Assuan limit we do, and encoding can
+ * triple a value's length, so a long SETDESC would otherwise produce a line
+ * the child rejects — aborting the whole session and leaving the user with
+ * no passphrase dialog at all. A truncated description is a far better
+ * outcome than no prompt, so cap the encoded value to fit. */
 static int fb_set(int wfd, int rfd, const char *cmd, const char *val)
 {
     if (val == NULL || val[0] == '\0') return 0;
     char enc[FB_LINE_MAX], line[FB_LINE_MAX];
-    fb_encode(val, enc, sizeof(enc));
+    size_t room = ASSUAN_LINE_MAX - strlen(cmd) - 1; /* command + space */
+    if (room > sizeof(enc)) room = sizeof(enc);
+    fb_encode(val, enc, room);
     snprintf(line, sizeof(line), "%s %s", cmd, enc);
     return fb_command(wfd, rfd, line);
 }
@@ -207,7 +215,10 @@ int fallback_getpin(const pe_state *st, const char *path,
     for (size_t i = 0; i < 4; i++) {
         if (optval[i][0] == '\0') continue;
         char enc[FB_LINE_MAX];
-        fb_encode(optval[i], enc, sizeof(enc));
+        /* Same line-limit cap as fb_set: ttyname is a full-width field. */
+        size_t room = ASSUAN_LINE_MAX - strlen(optname[i]) - 8; /* "OPTION =" */
+        if (room > sizeof(enc)) room = sizeof(enc);
+        fb_encode(optval[i], enc, room);
         snprintf(line, sizeof(line), "OPTION %s=%s", optname[i], enc);
         if (fb_command(wfd, rfd, line) < 0) goto done;
     }

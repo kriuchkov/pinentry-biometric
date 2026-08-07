@@ -66,14 +66,20 @@ static void cmd_getpin(FILE *out, pe_state *st)
         assuan_send_err(out, PE_ERR_NO_PIN_ENTRY, "No GUI session available");
         return;
     }
-    bool first_entry_forced = false;
-    if (st->error[0] && st->keygrip[0] &&
-        strcmp(g_kc_served, st->keygrip) == 0) {
-        /* Agent rejected the passphrase we served from the Keychain:
-         * drop the stale item and ask the user again. */
+    /* SETERROR means the agent rejected the last passphrase, so never answer
+     * this GETPIN from the Keychain — a retry that arrives on a *fresh*
+     * connection has an empty g_kc_served, and keying the decision on that
+     * alone would hand back the same rejected passphrase until the agent
+     * gives up, never offering the prompt.
+     *
+     * Deleting the item stays gated on having served it from this process,
+     * which required passing the user-presence check: otherwise any process
+     * could destroy a stored passphrase with SETERROR + GETPIN and no
+     * authentication at all. */
+    bool first_entry_forced = st->error[0] && st->keygrip[0];
+    if (first_entry_forced && strcmp(g_kc_served, st->keygrip) == 0) {
         keychain_delete(st->keygrip);
         g_kc_served[0] = '\0';
-        first_entry_forced = true;
     }
     if (!first_entry_forced && st->keygrip[0] && !keychain_disabled()) {
         char reason[PE_FIELD_MAX + 64];
@@ -149,8 +155,12 @@ static void cmd_confirm(FILE *out, const pe_state *st, const char *args)
     }
     const char *title = st->title[0] ? st->title : st->desc;
     if (args != NULL && strstr(args, "--one-button") != NULL) {
-        ui_message(title, st->desc); /* CONFIRM --one-button == MESSAGE */
-        assuan_send_ok(out, NULL);
+        /* CONFIRM --one-button == MESSAGE. An OK here asserts the user saw
+         * the text, so a dialog that never rendered must not report one. */
+        if (ui_message(title, st->desc) == 0)
+            assuan_send_ok(out, NULL);
+        else
+            assuan_send_err(out, PE_ERR_INTERNAL, "could not show dialog");
         return;
     }
     const char *cancel =
@@ -167,6 +177,19 @@ static void cmd_confirm(FILE *out, const pe_state *st, const char *args)
     default:
         assuan_send_err(out, PE_ERR_CANCELED, "Operation cancelled");
     }
+}
+
+/* Same contract as CONFIRM --one-button: OK means the user saw the text. */
+static void cmd_message(FILE *out, const pe_state *st)
+{
+    if (!ui_session_available()) {
+        assuan_send_err(out, PE_ERR_NO_PIN_ENTRY, "No GUI session available");
+        return;
+    }
+    if (ui_message(st->title[0] ? st->title : st->desc, st->desc) == 0)
+        assuan_send_ok(out, NULL);
+    else
+        assuan_send_err(out, PE_ERR_INTERNAL, "could not show dialog");
 }
 
 static void cmd_getinfo(FILE *out, const pe_state *st, const char *what)
@@ -188,8 +211,12 @@ static void cmd_getinfo(FILE *out, const pe_state *st, const char *what)
         assuan_send_err(out, PE_ERR_ASS_UNKNOWN_CMD, "Unknown GETINFO item");
         return;
     }
-    assuan_send_data(out, (const unsigned char *)buf, strlen(buf));
-    assuan_send_ok(out, NULL);
+    /* Same invariant as GETPIN (assuan.h): OK only after the data line
+     * actually went out, or the peer reads a bare OK as an empty answer. */
+    if (assuan_send_data(out, (const unsigned char *)buf, strlen(buf)) == 0)
+        assuan_send_ok(out, NULL);
+    else
+        assuan_send_err(out, PE_ERR_INTERNAL, "could not send data");
 }
 
 static bool is_set_cmd(const char *cmd)
@@ -243,12 +270,30 @@ int main(int argc, char **argv)
         } else if (strcmp(a, "--debug") == 0) {
             g_debug = true;
             assuan_set_debug(true);
-        } else if (strcmp(a, "--fallback-pinentry") == 0 && i + 1 < argc) {
+        } else if (strcmp(a, "--fallback-pinentry") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "pinentry-biometric: --fallback-pinentry "
+                                "needs a path\n");
+                return 2;
+            }
             g_fallback_path = argv[++i];
         } else if (strncmp(a, "--fallback-pinentry=", 20) == 0) {
             g_fallback_path = a + 20;
-        } else if (strncmp(a, "--access-control=", 17) == 0) {
-            const char *v = a + 17;
+        } else if (strncmp(a, "--access-control=", 17) == 0 ||
+                   strcmp(a, "--access-control") == 0) {
+            /* Both spellings: silently ignoring the space-separated form
+             * would downgrade the policy to the weaker default while the
+             * user believes they asked for the stricter one. */
+            const char *v;
+            if (a[16] == '=') {
+                v = a + 17;
+            } else if (i + 1 < argc) {
+                v = argv[++i];
+            } else {
+                fprintf(stderr, "pinentry-biometric: --access-control needs "
+                                "a mode\n");
+                return 2;
+            }
             if (strcmp(v, "biometry-current-set") == 0) {
                 g_ac = PE_AC_BIOMETRY_CURRENT_SET;
             } else if (strcmp(v, "user-presence") == 0) {
@@ -309,8 +354,7 @@ int main(int argc, char **argv)
         } else if (strcasecmp(cmd, "CONFIRM") == 0) {
             cmd_confirm(out, &st, args);
         } else if (strcasecmp(cmd, "MESSAGE") == 0) {
-            ui_message(st.title[0] ? st.title : st.desc, st.desc);
-            assuan_send_ok(out, NULL);
+            cmd_message(out, &st);
         } else if (strcasecmp(cmd, "GETINFO") == 0) {
             cmd_getinfo(out, &st, args);
         } else if (strcasecmp(cmd, "RESET") == 0) {
