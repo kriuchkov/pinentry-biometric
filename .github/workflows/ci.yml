@@ -1,0 +1,105 @@
+# CI for pinentry-biometric.
+#
+# The point of this pipeline is not "tests pass" — it is that the security
+# properties the README claims stay true. tests/security_check.sh is the job
+# that matters most: it fails if the binary loses Hardened Runtime, which
+# would silently reduce the Touch ID requirement to decoration.
+#
+# Note what CI cannot cover: there is no Touch ID sensor and no Aqua session
+# on a runner, so GETPIN, the Keychain and the biometric prompt are only
+# exercised by hand (INTERACTIVE=1 tests/integration.sh).
+name: CI
+
+on:
+  push:
+    branches: [master, dev]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: build & test (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # README promises both architectures; building universal is not the
+          # same as knowing each slice runs, so test on real hardware of each.
+          # macos-13 was retired in December 2025 — a job referencing a label
+          # that no longer exists queues forever instead of failing, so keep
+          # these current. GitHub drops Intel entirely when macOS 15 retires
+          # (autumn 2027); the x86_64 slice becomes build-only after that.
+          - os: macos-15
+            arch: Apple Silicon
+          - os: macos-15-intel
+            arch: Intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: make
+
+      # Output is captured before matching: piping into `grep -q` kills the
+      # producer with SIGPIPE, which turns into a spurious failure the moment
+      # anyone adds `set -o pipefail` here.
+      - name: Verify the artifact is universal and targets macOS 12
+        run: |
+          archs="$(lipo -info build/pinentry-biometric)"
+          echo "$archs"
+          for want in x86_64 arm64; do
+            case "$archs" in
+              *"$want"*) ;;
+              *) echo "::error::binary is missing the $want slice"; exit 1 ;;
+            esac
+          done
+          load="$(otool -l build/pinentry-biometric)"
+          case "$load" in
+            *"minos 12.0"*) ;;
+            *) echo "::error::deployment target is not macOS 12.0"; exit 1 ;;
+          esac
+
+      - name: Unit tests
+        run: make test
+
+      - name: Protocol integration tests
+        run: tests/integration.sh
+
+      - name: Security checks (link set, Hardened Runtime, log masking)
+        run: tests/security_check.sh
+
+  analyze:
+    name: clang static analyzer
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # The analyzer exits 0 even when it reports findings — including with
+      # -Werror — so the diagnostics have to be inspected, not the exit code.
+      - name: Analyze
+        run: |
+          rc=0
+          analyze() {
+            echo "--- $1"
+            out="$(clang --analyze -Xclang -analyzer-output=text \
+                     -std=c11 -Isrc "${@:2}" "$1" 2>&1)"
+            printf '%s\n' "$out"
+            if printf '%s' "$out" | grep -q 'warning:'; then
+              echo "::error file=$1::static analyzer reported findings"
+              rc=1
+            fi
+          }
+          for f in src/*.c; do analyze "$f"; done
+          for f in src/*.m; do analyze "$f" -fobjc-arc; done
+          exit $rc
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check test scripts
+        run: shellcheck tests/*.sh

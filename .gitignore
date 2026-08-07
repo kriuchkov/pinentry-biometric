@@ -1,0 +1,8 @@
+# Build output. Never commit binaries: a prebuilt artifact in a security
+# tool's repository cannot be attributed to reviewed source.
+build/
+*.o
+*.dSYM/
+
+# macOS
+.DS_Store
