@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="pinentry-biometric">
+  <title>pinentry-biometric</title>
+  <!-- Plain shapes only: no <style>, no external fonts, no text. GitHub
+       sanitises README SVGs, and anything it strips would render as a hole. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4A7FB5"/>
+      <stop offset="1" stop-color="#1E3A5F"/>
+    </linearGradient>
+  </defs>
+
+  <!-- The tile carries its own background so the mark reads on both the
+       light and the dark GitHub theme without a <picture> swap. -->
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+
+  <!-- Fingerprint ridges, opening downward. The tails are uneven on purpose:
+       symmetric ones read as a rainbow rather than a print. -->
+  <g fill="none" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round">
+    <path d="M 35 90 L 35 62 A 29 29 0 0 1 93 62 L 93 94" opacity="1"/>
+    <path d="M 24 98 L 24 62 A 40 40 0 0 1 104 62 L 104 102" opacity=".72"/>
+    <path d="M 14 104 L 14 62 A 50 50 0 0 1 114 62 L 114 108" opacity=".45"/>
+  </g>
+
+  <!-- Keyhole at the core: the secret the ridges gate. -->
+  <g fill="#FFFFFF">
+    <circle cx="64" cy="56" r="11"/>
+    <path d="M 58 64 L 54 90 L 74 90 L 70 64 Z"/>
+  </g>
+</svg>
