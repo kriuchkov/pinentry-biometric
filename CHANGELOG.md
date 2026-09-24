@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-09-24
+
+### Fixed
+
+- `SETKEYINFO --clear`, which gpg-agent sends before every uncacheable
+  prompt (a new passphrase and its re-entry), was stored as the keygrip
+  `--clear`. A new passphrase could then be saved to the Keychain under that
+  shared name, and the "re-enter" prompt was answered from the Keychain
+  instead of by the user — defeating the typo check and silently reusing
+  that passphrase for later keys. Only `<mode>/<keygrip>` values now set a
+  keygrip; anything else clears it. If you generated or re-protected a key
+  with 0.1.0, check for a stale item with
+  `security find-generic-password -s GnuPG -a --clear` and delete it.
+
+### Changed
+
+- README and SECURITY.md state plainly that targeted malware running as the
+  user is not stopped (a relaying `pinentry-program` wrapper, or an
+  unhardened Homebrew gpg-agent), and that the binary must be installed to a
+  root-owned directory; the `PREFIX=$HOME/.local` install example is gone.
+- README: project logo and a centred header with badges.
+
 ## [0.1.0] - 2026-08-06
 
 ### Added

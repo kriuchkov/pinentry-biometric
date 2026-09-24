@@ -2,7 +2,7 @@
 
 pinentry-biometric holds the key to your GPG secret key. This document states
 plainly what it does and does not protect against. It has **not** been
-independently audited; version 0.1.0 is a first release.
+independently audited; it is an early 0.1.x release.
 
 Report vulnerabilities by opening a GitHub security advisory on this
 repository rather than a public issue.
@@ -39,8 +39,28 @@ name, changing your enrolled fingerprints does not invalidate the item.
 
 ## Known limitations
 
-These are real and unfixed in 0.1.0. They are listed here rather than papered
+These are real and unfixed in 0.1.1. They are listed here rather than papered
 over in the README.
+
+- **Targeted malware running as you is not stopped.** The defenses above
+  make the passphrase impossible to read *silently*; they do not keep it from
+  an attacker who already runs code as you and waits. Such an attacker can
+  point `pinentry-program` in `~/.gnupg/gpg-agent.conf` at a wrapper that
+  runs this program and relays the session: your Touch ID prompt then shows
+  the genuine keygrip at exactly the moment you ran gpg, so judging by keygrip
+  and timing does not help. Alternatively, gpg-agent — where the passphrase
+  ends up — is ad-hoc signed without Hardened Runtime in a typical Homebrew
+  install, so it can be restarted under `DYLD_INSERT_LIBRARIES` and read every
+  passphrase you approve. No pinentry can close this; pinentry-mac is exposed
+  in the same way.
+
+- **A user-writable install location weakens the Keychain ACL.** Every ad-hoc
+  rebuild changes the code signature, so you learn to approve the "wants to
+  use your confidential information" panel. If the binary lives where your
+  own user can write (`~/.local/bin`, `/opt/homebrew/bin`), a same-uid
+  attacker can replace it and get the same panel; approving it gives the
+  replacement the passphrase without any Touch ID. Install to a root-owned
+  directory, and deny a Keychain panel you did not expect after a rebuild.
 
 - **The fallback pinentry is fully trusted.** First-time passphrase entry is
   proxied to an external `pinentry-mac`, found next to our binary and then in
@@ -83,4 +103,7 @@ In scope: passphrase disclosure to an unauthenticated caller, bypass of the
 user-presence check, memory-safety bugs in the Assuan parser or the fallback
 protocol driver, and anything that causes the wrong passphrase to be handed to
 gpg-agent. Out of scope: attacks requiring root, physical access to an
-unlocked machine, or a compromised gpg-agent.
+unlocked machine, or a compromised gpg-agent — which, as noted above, a
+same-uid attacker can usually arrange, so "any process running as you" is in
+scope only for *silent* disclosure, not for the attacks listed under Known
+limitations.

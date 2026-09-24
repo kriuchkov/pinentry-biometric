@@ -101,8 +101,9 @@ codesign -dv build/pinentry-biometric
 
 ```sh
 sudo make install               # installs to /usr/local/bin
-make install PREFIX=$HOME/.local  # or anywhere else
 ```
+
+Install into a **root-owned** directory. The Keychain item trusts one code signature, and after every ad-hoc rebuild macOS asks you to authorize the new one (see [Signing](#signing)). A binary in a directory your own user can write to — `~/.local/bin`, or `/opt/homebrew/bin` on a typical Mac — can be swapped by any process running as you, and the next Keychain panel looks exactly like the one you expect after a rebuild; "Always Allow" then hands the passphrase to the replacement with no Touch ID at all. A Keychain panel when you have *not* just rebuilt or upgraded is the signal to press Deny. (`make install PREFIX=…` still works for testing.)
 
 Then point gpg-agent at it — add to `~/.gnupg/gpg-agent.conf`:
 
@@ -141,6 +142,13 @@ pinentry-biometric does **not** verify who its parent process is — gpg-agent r
 1. the **Keychain ACL** — macOS releases the item without a password panel only to a binary whose code signature matches the one that created it. A same-uid attacker calling `SecItemCopyMatching` (or `security find-generic-password`) directly gets the panel, not the passphrase;
 2. the **user-presence check** — before the item is read, this program requires Touch ID (or your account password) via LocalAuthentication. Note that this check runs *in this process*: it is meaningful only because Hardened Runtime prevents code injection into it. See [SECURITY.md](SECURITY.md);
 3. the **Touch ID prompt** — treat a prompt you did not trigger as the signal to press Cancel. Judge it by the keygrip and by timing, **not** by the description text: that text is supplied by whoever is asking (any process may send `SETDESC`), and is only filtered to printable ASCII.
+
+**What this does not stop: targeted malware running as your user.** These defenses stop *opportunistic* access — another app or a script reading the Keychain item, or a process asking for the passphrase at a moment you did not expect. They do not stop an attacker who can already run code as you and is willing to wait:
+
+- it can point `pinentry-program` in `~/.gnupg/gpg-agent.conf` at a wrapper that runs this program and relays the session — the Touch ID prompt then shows the right keygrip at exactly the moment you ran gpg, and the wrapper keeps the passphrase;
+- the passphrase's destination, gpg-agent, is not hardened in a typical Homebrew install (ad-hoc signature, no Hardened Runtime), so the attacker can restart it with `DYLD_INSERT_LIBRARIES` and read every passphrase after you approve.
+
+No pinentry can prevent this; the same attacks work against pinentry-mac. What pinentry-biometric adds is that the stored passphrase is never released *silently*.
 
 The binary never opens network connections, and `tests/security_check.sh` checks the link set for network frameworks. Secrets are wiped with `memset_s` immediately after use and core dumps are disabled at startup; heap buffers holding secrets are `mlock`ed on a best-effort basis, while short-lived stack buffers in the protocol and fallback paths are wiped but not locked.
 

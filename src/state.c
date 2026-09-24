@@ -83,12 +83,17 @@ int state_handle_set(pe_state *s, const char *cmd, char *args)
         }
     }
     if (strcasecmp(cmd, "SETKEYINFO") == 0) {
-        /* "n/<KEYGRIP>" or "--" (no caching). Store keygrip sans prefix. */
-        if (!*args || strcmp(args, "--") == 0)
+        /* "<mode>/<KEYGRIP>" (n/u/s): store the keygrip sans prefix.
+         * Anything else clears it — notably "--clear", which gpg-agent sends
+         * before every prompt that must not be cached, including new
+         * passphrases and their re-entry (gnupg agent/call-pinentry.c,
+         * agent_askpin; pinentry/pinentry.c, cmd_setkeyinfo). Storing
+         * "--clear" as a keygrip would save a new passphrase under that
+         * shared name and answer the re-entry prompt from the Keychain. */
+        if (args[0] == '\0' || args[1] != '/')
             memset(s->keygrip, 0, sizeof s->keygrip);
         else
-            field_copy(s->keygrip, sizeof s->keygrip,
-                       args[0] && args[1] == '/' ? args + 2 : args);
+            field_copy(s->keygrip, sizeof s->keygrip, args + 2);
         return 0;
     }
     return -1;
