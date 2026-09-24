@@ -83,6 +83,18 @@ static void test_setkeyinfo(void)
     char empty[] = "";
     assert(state_handle_set(&st, "SETKEYINFO", empty) == 0);
     assert(st.keygrip[0] == '\0');
+    /* What gpg-agent actually sends before uncacheable prompts (new
+     * passphrase and its re-entry): must clear, never become a keygrip. */
+    char ki3[] = "n/DEADBEEF";
+    assert(state_handle_set(&st, "SETKEYINFO", ki3) == 0);
+    char clear_long[] = "--clear";
+    assert(state_handle_set(&st, "SETKEYINFO", clear_long) == 0);
+    assert(st.keygrip[0] == '\0');
+    char ki4[] = "n/DEADBEEF";
+    assert(state_handle_set(&st, "SETKEYINFO", ki4) == 0);
+    char noprefix[] = "DEADBEEF";   /* no "<mode>/" prefix: not a keyinfo */
+    assert(state_handle_set(&st, "SETKEYINFO", noprefix) == 0);
+    assert(st.keygrip[0] == '\0');
     PASS("setkeyinfo");
 }
 
@@ -136,6 +148,8 @@ static void test_oversized_args_truncated(void)
     state_init(&st);
     assert(state_handle_set(&st, "SETDESC", big) == 0);
     assert(strlen(st.desc) == PE_FIELD_MAX - 1);  /* truncated, NUL-terminated */
+    big[0] = 'n';                   /* a keyinfo needs the "<mode>/" prefix */
+    big[1] = '/';
     assert(state_handle_set(&st, "SETKEYINFO", big) == 0);
     assert(strlen(st.keygrip) == PE_KEYGRIP_MAX - 1);
     PASS("oversized_args_truncated");

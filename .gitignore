@@ -9,5 +9,8 @@ build/
 # Scoped to the root so a real plist elsewhere in the tree is not masked.
 /*.plist
 
+# Article and post drafts.
+/drafts/
+
 # macOS
 .DS_Store

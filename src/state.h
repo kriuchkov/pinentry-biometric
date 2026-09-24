@@ -21,7 +21,8 @@ typedef struct {
     char notok_label[PE_FIELD_MAX];
     char error[PE_FIELD_MAX];   /* SETERROR: non-empty => agent rejected a
                                    previously returned passphrase */
-    /* SETKEYINFO: keygrip without the "n/" prefix; "" if none or "--" */
+    /* SETKEYINFO: keygrip without the "<mode>/" prefix; "" if none,
+       "--clear", or any value without that prefix */
     char keygrip[PE_KEYGRIP_MAX];
 
     /* OPTIONs we track; unknown options are accepted and ignored */
