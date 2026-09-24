@@ -2,7 +2,7 @@
 
 pinentry-biometric holds the key to your GPG secret key. This document states
 plainly what it does and does not protect against. It has **not** been
-independently audited; version 0.1.0 is a first release.
+independently audited; it is an early 0.1.x release.
 
 Report vulnerabilities by opening a GitHub security advisory on this
 repository rather than a public issue.
@@ -39,7 +39,7 @@ name, changing your enrolled fingerprints does not invalidate the item.
 
 ## Known limitations
 
-These are real and unfixed in 0.1.0. They are listed here rather than papered
+These are real and unfixed in 0.1.1. They are listed here rather than papered
 over in the README.
 
 - **Targeted malware running as you is not stopped.** The defenses above
