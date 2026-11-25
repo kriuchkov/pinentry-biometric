@@ -13,7 +13,8 @@
 # SKIPPED if the runner image changes.
 #
 # Actions are pinned to a commit, not a movable tag: this pipeline vouches
-# for a binary that guards a passphrase. The comment names the release.
+# for a binary that guards a passphrase. The comment names the release;
+# Dependabot (.github/dependabot.yml) proposes updates to both.
 name: CI
 
 on:
