@@ -9,8 +9,8 @@
 # Keychain and the biometric prompt are only exercised by hand
 # (INTERACTIVE=1 tests/integration.sh). The first-entry fallback is driven
 # against a scripted pinentry; GETPIN refuses to run without a GUI session,
-# which GitHub's macOS runners do have, so watch for that step turning into
-# SKIPPED if the runner image changes.
+# which GitHub's macOS runners do have. REQUIRE_GUI=1 makes the job fail,
+# instead of skipping those tests, if a runner image ever loses it.
 name: CI
 
 on:
@@ -70,6 +70,8 @@ jobs:
 
       - name: Protocol integration tests
         run: tests/integration.sh
+        env:
+          REQUIRE_GUI: 1
 
       - name: Security checks (link set, Hardened Runtime, log masking)
         run: tests/security_check.sh

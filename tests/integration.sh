@@ -138,6 +138,11 @@ expect_pin() {
 run_fb ok 'GETPIN\nBYE\n'
 # 83886165 = GPG_ERR_NO_PIN_ENTRY: GETPIN fails fast without a GUI session.
 if grep -q '^ERR 83886165' "$TMPD/out"; then
+    # CI sets REQUIRE_GUI=1: its runners have a GUI session, and losing it
+    # must fail the job rather than quietly skip everything below.
+    if [ "${REQUIRE_GUI:-0}" = 1 ]; then
+        fail "no GUI session, so the fallback tests cannot run (REQUIRE_GUI=1)"
+    fi
     echo "SKIPPED: no GUI session here, and GETPIN refuses to run without one."
 else
     expect_pin "passphrase relay"
@@ -191,37 +196,37 @@ else
     # exit, and the fallback's dialog has to go with us; the hanging fake
     # stands in for that dialog.
     #
-    # sigint_case <mode> <pidfile>: SIGINT a session that is waiting on the
-    # fake. Within 3 s — long before the fake's own 30 s run out — we must
-    # be gone, and so must the process whose pid the fake left in <pidfile>.
-    # Job control is switched on for the spawn because a non-interactive
-    # shell starts background jobs with SIGINT ignored, and gpg-agent does
-    # not.
-    sigint_case() {
+    # cancel_case <signal> <mode> <pidfile>: send <signal> to a session that
+    # is waiting on the fake. Within 3 s — long before the fake's own 30 s
+    # run out — we must be gone, and so must the process whose pid the fake
+    # left in <pidfile>. Job control is switched on for the spawn because a
+    # non-interactive shell starts background jobs with SIGINT and SIGQUIT
+    # ignored, and gpg-agent does not.
+    cancel_case() {
         local pe victim tick=0
         rm -f "$TMPD/fake.pid" "$TMPD/fake.pid.child"
         printf 'GETPIN\n' > "$TMPD/in"
         set -m
-        FAKE_PIN_MODE="$1" FAKE_PIN_PIDFILE="$TMPD/fake.pid" \
+        FAKE_PIN_MODE="$2" FAKE_PIN_PIDFILE="$TMPD/fake.pid" \
             "$BIN" --fallback-pinentry "$FAKE" < "$TMPD/in" > "$TMPD/out" &
         pe=$!
         set +m
-        while [ ! -s "$2" ]; do
+        while [ ! -s "$3" ]; do
             tick=$((tick + 1))
             if [ "$tick" -gt 50 ]; then
                 kill -9 "$pe" 2>/dev/null || true
-                fail "mode $1: the fake pinentry never received GETPIN"
+                fail "SIG$1, mode $2: the fake pinentry never received GETPIN"
             fi
             sleep 0.1
         done
-        victim="$(cat "$2")"
-        kill -INT "$pe"
+        victim="$(cat "$3")"
+        kill "-$1" "$pe"
         tick=0
         while kill -0 "$pe" 2>/dev/null; do
             tick=$((tick + 1))
             if [ "$tick" -gt 30 ]; then
                 kill -9 "$pe" "$victim" 2>/dev/null || true
-                fail "mode $1: still running 3 s after SIGINT"
+                fail "SIG$1, mode $2: still running 3 s after the signal"
             fi
             sleep 0.1
         done
@@ -231,17 +236,22 @@ else
             tick=$((tick + 1))
             if [ "$tick" -gt 10 ]; then
                 kill -9 "$victim" 2>/dev/null || true
-                fail "mode $1: the fallback's dialog process outlived a SIGINT sent to us"
+                fail "SIG$1, mode $2: the fallback's dialog process outlived us"
             fi
             sleep 0.1
         done
     }
-    sigint_case hang "$TMPD/fake.pid"
+    cancel_case INT hang "$TMPD/fake.pid"
     # A wrapper script that runs pinentry-mac without exec: the dialog is a
     # grandchild holding our pipes.
-    sigint_case hang-child "$TMPD/fake.pid.child"
+    cancel_case INT hang-child "$TMPD/fake.pid.child"
+    # The child runs in its own process group, so a terminal's or a service
+    # manager's signal reaches only us; each has to take the child along.
+    for sig in TERM HUP QUIT; do
+        cancel_case "$sig" hang "$TMPD/fake.pid"
+    done
 
-    echo "PASS: fallback relay, forwarding, cancel, child failure and SIGINT"
+    echo "PASS: fallback relay, forwarding, cancel, child failure and signals"
 fi
 
 # ---------------------------------------------------------------------------

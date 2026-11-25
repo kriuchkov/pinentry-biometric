@@ -74,26 +74,37 @@ static void fb_on_cancel(int sig)
     }
 }
 
-/* Catch sig while a child runs, saving the old action in *old. A signal we
+/* The signals that end us while a child runs. SIGINT is gpg-agent's cancel;
+ * the rest come from whoever else stops us: a service manager, or a
+ * terminal when the agent runs in the foreground. The child is in its own
+ * process group, so it gets no copy of a terminal's signal and has to be
+ * taken down by us. */
+static const int fb_sigs[] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT };
+#define FB_NSIGS (sizeof fb_sigs / sizeof fb_sigs[0])
+
+/* Catch fb_sigs while a child runs, saving the old actions. A signal we
  * were started with ignored stays ignored. */
-static void fb_catch(int sig, struct sigaction *old)
+static void fb_catch(struct sigaction old[FB_NSIGS])
 {
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = fb_on_cancel;
     sigemptyset(&sa.sa_mask);
-    (void)sigaction(sig, NULL, old);
-    if (old->sa_handler != SIG_IGN)
-        (void)sigaction(sig, &sa, NULL);
+    for (size_t i = 0; i < FB_NSIGS; i++)
+        sigaddset(&sa.sa_mask, fb_sigs[i]);
+    for (size_t i = 0; i < FB_NSIGS; i++) {
+        (void)sigaction(fb_sigs[i], NULL, &old[i]);
+        if (old[i].sa_handler != SIG_IGN)
+            (void)sigaction(fb_sigs[i], &sa, NULL);
+    }
 }
 
-/* Put back the actions fb_catch replaced, then deliver a cancel signal that
+/* Put back the actions fb_catch replaced, then deliver a signal that
  * arrived meanwhile to them; by default, that ends us. */
-static void fb_uncatch(const struct sigaction *old_int,
-                       const struct sigaction *old_term)
+static void fb_uncatch(const struct sigaction old[FB_NSIGS])
 {
-    (void)sigaction(SIGINT, old_int, NULL);
-    (void)sigaction(SIGTERM, old_term, NULL);
+    for (size_t i = 0; i < FB_NSIGS; i++)
+        (void)sigaction(fb_sigs[i], &old[i], NULL);
     int sig = atomic_load(&g_cancel);
     if (sig != 0)
         (void)raise(sig);
@@ -249,13 +260,13 @@ int fallback_getpin(const pe_state *st, const char *path,
     posix_spawn_file_actions_addinherit_np(&fa, 2); /* open: secure_process_init */
 
     /* exec keeps an ignored signal ignored. We ignore SIGPIPE and may have
-     * been started with SIGINT or SIGTERM ignored; the child starts with
-     * the defaults instead. */
+     * been started with one of fb_sigs ignored; the child starts with the
+     * defaults instead. */
     sigset_t dfl;
     sigemptyset(&dfl);
     sigaddset(&dfl, SIGPIPE);
-    sigaddset(&dfl, SIGINT);
-    sigaddset(&dfl, SIGTERM);
+    for (size_t i = 0; i < FB_NSIGS; i++)
+        sigaddset(&dfl, fb_sigs[i]);
     posix_spawnattr_t attr;
     posix_spawnattr_init(&attr);
     posix_spawnattr_setsigdefault(&attr, &dfl);
@@ -264,10 +275,9 @@ int fallback_getpin(const pe_state *st, const char *path,
                              POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETPGROUP |
                              POSIX_SPAWN_CLOEXEC_DEFAULT);
 
-    struct sigaction old_int, old_term;
+    struct sigaction old[FB_NSIGS];
     atomic_store(&g_cancel, 0);
-    fb_catch(SIGINT, &old_int);
-    fb_catch(SIGTERM, &old_term);
+    fb_catch(old);
 
     pid_t pid;
     char *cargv[] = { (char *)path, NULL };
@@ -282,7 +292,7 @@ int fallback_getpin(const pe_state *st, const char *path,
     if (rc != 0) {
         close(wfd);
         close(rfd);
-        fb_uncatch(&old_int, &old_term);
+        fb_uncatch(old);
         return -1;
     }
 
@@ -381,6 +391,6 @@ done:
         }
         ret = 1;
     }
-    fb_uncatch(&old_int, &old_term);
+    fb_uncatch(old);
     return ret;
 }

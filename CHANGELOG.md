@@ -24,8 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `SETKEYINFO` is validated: `n/` and `s/` need a 40-hex-digit keygrip,
-  `u/` one printable word (a client's cache ID, such as gpg's `S<salt>`).
+- `SETKEYINFO` is validated: `n/` and `s/` need a 40-hex-digit keygrip
+  (a lower-case one is folded to upper case, so it finds the same Keychain
+  item), `u/` one printable word (a client's cache ID, such as gpg's
+  `S<salt>`).
   An id too long to store is rejected rather than truncated, so two long
   ids can no longer share a Keychain item. Anything rejected is treated
   like `--clear`.

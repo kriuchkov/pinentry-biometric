@@ -121,10 +121,20 @@ int state_handle_set(pe_state *s, const char *cmd, char *args)
          * cmd_setkeyinfo). Storing "--clear" as a keygrip would save a new
          * passphrase under that shared name and answer the re-entry prompt
          * from the Keychain. */
-        if (keyinfo_valid(args))
+        if (keyinfo_valid(args)) {
             field_copy(s->keygrip, sizeof s->keygrip, args + 2);
-        else
+            /* gpg-agent sends a keygrip in upper case. Fold a lower-case
+             * one onto it, or the same key would get a second Keychain
+             * account. A u/ cache ID is the client's own and stays as is. */
+            if (args[0] != 'u') {
+                for (char *p = s->keygrip; *p != '\0'; p++) {
+                    if (*p >= 'a' && *p <= 'f')
+                        *p = (char)(*p - 'a' + 'A');
+                }
+            }
+        } else {
             memset(s->keygrip, 0, sizeof s->keygrip);
+        }
         return 0;
     }
     return -1;

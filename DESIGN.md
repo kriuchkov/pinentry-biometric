@@ -16,8 +16,9 @@ frameworks only. Framework calls live in the two `.m` files; `assuan.c`,
 - **`state.c`** — session state: decoded `SET*` fields and tracked
   `OPTION`s. `RESET` clears the `SET*` fields and keeps the options, as
   reference pinentry does; unknown options get `OK`. `SETKEYINFO` keeps an
-  id only in the forms gpg-agent sends (`n/` or `s/` + 40 hex digits, `u/` +
-  one printable word); anything else clears it, like `--clear`.
+  id only in the forms gpg-agent sends (`n/` or `s/` + 40 hex digits, folded
+  to upper case; `u/` + one printable word); anything else clears it, like
+  `--clear`.
 - **`secure_mem.c`** — process hardening at startup: core dumps off
   (`RLIMIT_CORE` 0), and `/dev/null` on any of fd 0–2 that is closed, so no
   pipe or framework file can take the place of stdio. Each secret gets
@@ -51,10 +52,10 @@ frameworks only. Framework calls live in the two `.m` files; `assuan.c`,
   buffer. The child is reaped on every error path and dies with us:
   gpg-agent cancels a pinentry with SIGINT (libassuan
   `assuan_pipe_kill_server`, called from `watch_sock` in gnupg
-  `agent/call-pinentry.c`), so while a child runs, SIGINT and SIGTERM kill
-  it before we exit and its dialog does not stay on screen. The child leads
-  its own process group and the whole group is killed, so the pinentry
-  behind a wrapper script goes too. The handler may run on any thread (a
+  `agent/call-pinentry.c`), so while a child runs, SIGINT, SIGTERM, SIGHUP
+  and SIGQUIT kill it before we exit and its dialog does not stay on
+  screen. The child leads its own process group and the whole group is
+  killed, so the pinentry behind a wrapper script goes too. The handler may run on any thread (a
   signal mask is per thread), so it shares the child's pid with the main
   thread through atomics rather than relying on blocked signals.
 

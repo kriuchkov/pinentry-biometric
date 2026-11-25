@@ -22,8 +22,8 @@ typedef struct {
     char error[PE_FIELD_MAX];   /* SETERROR: non-empty => agent rejected a
                                    previously returned passphrase */
     /* SETKEYINFO: the id without the "<mode>/" prefix — a 40-hex keygrip
-       for n/ and s/, a printable cache ID for u/; "" if none, "--clear",
-       or anything malformed or too long to store */
+       (folded to upper case) for n/ and s/, a printable cache ID for u/;
+       "" if none, "--clear", or anything malformed or too long to store */
     char keygrip[PE_KEYGRIP_MAX];
 
     /* OPTIONs we track; unknown options are accepted and ignored */

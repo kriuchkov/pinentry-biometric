@@ -86,13 +86,18 @@ static void assert_keyinfo_clears(const char *val)
 static void test_setkeyinfo(void)
 {
     state_init(&st);
-    /* n/ and s/ carry a keygrip: 40 hex digits, either case. */
+    /* n/ and s/ carry a keygrip: 40 hex digits. Lower case is folded to
+     * the upper case gpg-agent sends, so one key has one Keychain account. */
     char ki[] = "s/" GRIP;
     assert(state_handle_set(&st, "SETKEYINFO", ki) == 0);
     assert(strcmp(st.keygrip, GRIP) == 0);
     char lower[] = "n/8cf2b57d48f5d42a6d1b4a6a2c1ac1d6e5f30583";
     assert(state_handle_set(&st, "SETKEYINFO", lower) == 0);
-    assert(strcmp(st.keygrip, lower + 2) == 0);
+    assert(strcmp(st.keygrip, GRIP) == 0);
+    /* ...but a u/ cache ID is the client's own and is kept verbatim. */
+    char mixed[] = "u/Sabcdef0123456789";
+    assert(state_handle_set(&st, "SETKEYINFO", mixed) == 0);
+    assert(strcmp(st.keygrip, mixed + 2) == 0);
     /* u/ carries a GET_PASSPHRASE cache ID, e.g. gpg's symmetric "S<salt>" */
     char sym[] = "u/S0123456789ABCDEF";
     assert(state_handle_set(&st, "SETKEYINFO", sym) == 0);
