@@ -42,26 +42,40 @@ static atomic_int g_child;    /* pid of the running child; 0 if none */
 static atomic_int g_cancel;   /* cancel signal received; 0 if none */
 static atomic_int g_handlers; /* fb_on_cancel calls in progress */
 
+/* SIGKILL the child and whatever it started. It is spawned as the leader of
+ * its own process group, so if it is a wrapper script the pinentry behind
+ * it dies too, instead of keeping its dialog and our pipes open. */
+static void fb_kill(pid_t pid)
+{
+    if (kill(-pid, SIGKILL) != 0)
+        (void)kill(pid, SIGKILL);
+}
+
 /* gpg-agent cancels a pinentry with SIGINT: libassuan's
  * assuan_pipe_kill_server, which gnupg agent/call-pinentry.c calls from
  * watch_sock when the client goes away (gpg interrupted) and from
  * agent_popup_message_stop. Dying alone would leave pinentry-mac's dialog
  * on screen, asking for a passphrase nobody receives any more. So kill the
- * child here and leave dying to fallback_getpin, which re-raises the
- * signal once the child is reaped. */
+ * child, then die here, by the default action, without waiting for the main
+ * thread to notice: it may be blocked reading a pipe that never reports
+ * EOF. If the pid is not known (the child is being spawned, or reaped),
+ * fallback_getpin sees g_cancel and does both. */
 static void fb_on_cancel(int sig)
 {
     atomic_fetch_add(&g_handlers, 1);
     atomic_store(&g_cancel, sig);
     pid_t pid = (pid_t)atomic_load(&g_child);
     if (pid > 0)
-        (void)kill(pid, SIGKILL);
+        fb_kill(pid);
     atomic_fetch_sub(&g_handlers, 1);
+    if (pid > 0) {
+        (void)signal(sig, SIG_DFL);
+        (void)raise(sig); /* delivered once we return */
+    }
 }
 
 /* Catch sig while a child runs, saving the old action in *old. A signal we
- * were started with ignored stays ignored. No SA_RESTART: a blocking read
- * on the main thread returns EINTR and then EOF from the dead child. */
+ * were started with ignored stays ignored. */
 static void fb_catch(int sig, struct sigaction *old)
 {
     struct sigaction sa;
@@ -195,16 +209,17 @@ static int fb_set(int wfd, int rfd, const char *cmd, const char *val)
     return fb_command(wfd, rfd, line);
 }
 
-/* Always reap; never block forever: after ~1s of polling, SIGKILL + wait. */
+/* Always reap; never block forever: after ~1s of polling, or at once when
+ * cancelled, SIGKILL + wait. */
 static void fb_reap(pid_t pid)
 {
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < 50 && atomic_load(&g_cancel) == 0; i++) {
         pid_t r = waitpid(pid, NULL, WNOHANG);
         if (r == pid || (r < 0 && errno != EINTR)) return;
         struct timespec ts = { 0, 20 * 1000 * 1000 };
         nanosleep(&ts, NULL);
     }
-    kill(pid, SIGKILL);
+    fb_kill(pid);
     while (waitpid(pid, NULL, 0) < 0 && errno == EINTR)
         ;
 }
@@ -244,8 +259,10 @@ int fallback_getpin(const pe_state *st, const char *path,
     posix_spawnattr_t attr;
     posix_spawnattr_init(&attr);
     posix_spawnattr_setsigdefault(&attr, &dfl);
+    posix_spawnattr_setpgroup(&attr, 0); /* its own group: see fb_kill */
     posix_spawnattr_setflags(&attr,
-                             POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_CLOEXEC_DEFAULT);
+                             POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETPGROUP |
+                             POSIX_SPAWN_CLOEXEC_DEFAULT);
 
     struct sigaction old_int, old_term;
     atomic_store(&g_cancel, 0);
@@ -257,14 +274,8 @@ int fallback_getpin(const pe_state *st, const char *path,
     int rc = posix_spawn(&pid, path, &fa, &attr, cargv, environ);
     posix_spawnattr_destroy(&attr);
     posix_spawn_file_actions_destroy(&fa);
-    if (rc == 0) {
-        /* The handler stores g_cancel before it loads g_child, we store
-         * g_child before we load g_cancel: a cancel arriving around the
-         * spawn is seen by at least one side, and the child is killed. */
+    if (rc == 0)
         atomic_store(&g_child, pid);
-        if (atomic_load(&g_cancel) != 0)
-            (void)kill(pid, SIGKILL);
-    }
     close(to_child[0]);
     close(from_child[1]);
     int wfd = to_child[1], rfd = from_child[0];
@@ -280,6 +291,12 @@ int fallback_getpin(const pe_state *st, const char *path,
     size_t acc_len = 0;
     char line[FB_LINE_MAX];
     unsigned char acc[FB_LINE_MAX];
+
+    /* A cancel that arrived around the spawn found no pid to kill. The
+     * handler stores g_cancel before it loads g_child, and we stored
+     * g_child before loading g_cancel here, so one side sees the other. */
+    if (atomic_load(&g_cancel) != 0)
+        goto done;
 
     /* greeting */
     if (fb_read_line(rfd, line, sizeof(line)) < 0 || strncmp(line, "OK", 2) != 0)
@@ -350,20 +367,20 @@ done:
     close(rfd);
     /* Once reaped, the pid may belong to an unrelated process. Take it away
      * from the handler and wait out a call that may still be using it; a
-     * later call sees 0, so on cancel we kill the child ourselves. */
+     * later call sees 0 and leaves the killing (fb_reap) and the dying
+     * (fb_uncatch) to us. */
     atomic_store(&g_child, 0);
     while (atomic_load(&g_handlers) != 0)
         sched_yield();
+    fb_reap(pid);
     if (atomic_load(&g_cancel) != 0) {
-        (void)kill(pid, SIGKILL);
         if (*out_pw != NULL) { /* cancelled: nobody gets the passphrase */
             secure_free(*out_pw, *out_len);
             *out_pw = NULL;
             *out_len = 0;
-            ret = 1;
         }
+        ret = 1;
     }
-    fb_reap(pid);
     fb_uncatch(&old_int, &old_term);
     return ret;
 }

@@ -19,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `allow-external-password-cache`, as in reference pinentry. gpg-agent
   sends it by default, so nothing changes unless you opted out.
 - Interrupting gpg left the pinentry-mac first-entry dialog on screen. The
-  fallback child is now killed with us.
+  fallback pinentry is now killed with us, including one started through
+  a wrapper script.
 
 ### Changed
 

@@ -3,7 +3,7 @@
 # binary with --fallback-pinentry so tests/integration.sh can drive
 # src/fallback.c without any dialog. Configured through the environment,
 # which reaches us through the binary under test:
-#   FAKE_PIN_MODE     ok (default) | cancel | die | hang
+#   FAKE_PIN_MODE     ok (default) | cancel | die | hang | hang-child
 #   FAKE_PIN_LOG      file that receives every command line we are sent
 #   FAKE_PIN_PIDFILE  file that receives our pid once GETPIN arrives
 set -u
@@ -65,6 +65,17 @@ while IFS= read -r line; do
                     # Like a modal dialog: blocked on something other than
                     # stdin, so EOF from a dead parent does not end us.
                     exec sleep 30
+                    ;;
+                hang-child)
+                    # Like a wrapper script that runs pinentry-mac without
+                    # exec: the dialog is our child and holds our pipes, so
+                    # killing only us would leave it up. Its pid goes to
+                    # $FAKE_PIN_PIDFILE.child.
+                    sleep 30 &
+                    if [ -n "${FAKE_PIN_PIDFILE:-}" ]; then
+                        printf '%s\n' "$!" > "$FAKE_PIN_PIDFILE.child"
+                    fi
+                    wait
                     ;;
             esac
             ;;

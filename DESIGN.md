@@ -52,10 +52,11 @@ frameworks only. Framework calls live in the two `.m` files; `assuan.c`,
   gpg-agent cancels a pinentry with SIGINT (libassuan
   `assuan_pipe_kill_server`, called from `watch_sock` in gnupg
   `agent/call-pinentry.c`), so while a child runs, SIGINT and SIGTERM kill
-  it before we exit and its dialog does not stay on screen. The handler may
-  run on any thread (a signal mask is per thread), so it shares the child's
-  pid with the main thread through atomics rather than relying on blocked
-  signals.
+  it before we exit and its dialog does not stay on screen. The child leads
+  its own process group and the whole group is killed, so the pinentry
+  behind a wrapper script goes too. The handler may run on any thread (a
+  signal mask is per thread), so it shares the child's pid with the main
+  thread through atomics rather than relying on blocked signals.
 
 ## Decision: proxy first entry to pinentry-mac
 

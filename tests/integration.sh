@@ -91,17 +91,19 @@ echo "PASS: oversized line rejected, session survived"
 
 # ---------------------------------------------------------------------------
 echo "== Step 3: first-entry fallback against a scripted pinentry =="
-# run_fb <mode> <input>: one session with tests/fake-pinentry.sh as the
+# run_fb <mode> <input> [-]: one session with tests/fake-pinentry.sh as the
 # fallback; <input> is expanded with printf %b. Our replies land in
 # $TMPD/out, every line the fake was sent in $TMPD/fake.log. A hard 10 s
 # deadline: a regression that raises a real dialog (Touch ID, "Save to
 # Keychain?") has to fail the test, not hang it. The binary gets an extra
-# fd 3, which must not leak into the fallback child.
+# fd 3, which must not leak into the fallback child. A third argument of
+# "-" starts the binary with its stderr closed.
 run_fb() {
     : > "$TMPD/fake.log"
     printf '%b' "$2" > "$TMPD/in"
     FAKE_PIN_MODE="$1" FAKE_PIN_LOG="$TMPD/fake.log" \
-        "$BIN" --fallback-pinentry "$FAKE" < "$TMPD/in" > "$TMPD/out" 3< /dev/null &
+        "$BIN" --fallback-pinentry "$FAKE" < "$TMPD/in" > "$TMPD/out" \
+        3< /dev/null 2>&"${3:-2}" &
     local pid=$! tick=0
     while kill -0 "$pid" 2>/dev/null; do
         tick=$((tick + 1))
@@ -150,7 +152,7 @@ else
 
     # Started with stderr closed, we must not let a pipe or any other
     # descriptor stand in for it: the child gets /dev/null as stderr.
-    run_fb ok 'GETPIN\nBYE\n' 2>&-
+    run_fb ok 'GETPIN\nBYE\n' -
     expect_pin "relay with our stderr closed"
     grep -qxF 'FD2 devnull' "$TMPD/fake.log" ||
         fail "with our stderr closed, the fallback child's stderr was not /dev/null"
@@ -168,8 +170,10 @@ else
     fi
 
     # No allow-external-password-cache (gpg-agent's no-allow-external-cache):
-    # a cacheable SETKEYINFO must not reach the Keychain — no Touch ID before
-    # the prompt, no "Save to Keychain?" after it; either trips the deadline.
+    # a cacheable SETKEYINFO must not lead to a "Save to Keychain?" dialog
+    # after the prompt, which would trip the deadline. The lookup half of
+    # the gate is not visible here (there is no item for this keygrip, so a
+    # lookup would not prompt either); test_state.c covers the gate itself.
     run_fb ok 'SETKEYINFO n/0000000000000000000000000000000000000000\nGETPIN\nBYE\n'
     expect_pin "keyinfo without allow-external-password-cache"
 
@@ -183,38 +187,59 @@ else
     expect 'OK closing connection' "session after the fallback died"
 
     # gpg-agent cancels a pinentry with SIGINT (libassuan's
-    # assuan_pipe_kill_server, e.g. when gpg is interrupted). The fallback
-    # child has to go with us, or its dialog stays on screen; the hanging
-    # fake stands in for that dialog. Job control is switched on for the
-    # spawn because a non-interactive shell starts background jobs with
-    # SIGINT ignored, and gpg-agent does not.
-    printf 'GETPIN\n' > "$TMPD/in"
-    set -m
-    FAKE_PIN_MODE=hang FAKE_PIN_PIDFILE="$TMPD/fake.pid" \
-        "$BIN" --fallback-pinentry "$FAKE" < "$TMPD/in" > "$TMPD/out" &
-    PE_PID=$!
-    set +m
-    tick=0
-    while [ ! -s "$TMPD/fake.pid" ]; do
-        tick=$((tick + 1))
-        if [ "$tick" -gt 50 ]; then
-            kill -9 "$PE_PID" 2>/dev/null || true
-            fail "the fake pinentry never received GETPIN"
-        fi
-        sleep 0.1
-    done
-    CHILD="$(cat "$TMPD/fake.pid")"
-    kill -INT "$PE_PID"
-    wait "$PE_PID" || true
-    tick=0
-    while kill -0 "$CHILD" 2>/dev/null; do
-        tick=$((tick + 1))
-        if [ "$tick" -gt 30 ]; then
-            kill -9 "$CHILD" 2>/dev/null || true
-            fail "the fallback child outlived a SIGINT sent to us"
-        fi
-        sleep 0.1
-    done
+    # assuan_pipe_kill_server, e.g. when gpg is interrupted). We have to
+    # exit, and the fallback's dialog has to go with us; the hanging fake
+    # stands in for that dialog.
+    #
+    # sigint_case <mode> <pidfile>: SIGINT a session that is waiting on the
+    # fake. Within 3 s — long before the fake's own 30 s run out — we must
+    # be gone, and so must the process whose pid the fake left in <pidfile>.
+    # Job control is switched on for the spawn because a non-interactive
+    # shell starts background jobs with SIGINT ignored, and gpg-agent does
+    # not.
+    sigint_case() {
+        local pe victim tick=0
+        rm -f "$TMPD/fake.pid" "$TMPD/fake.pid.child"
+        printf 'GETPIN\n' > "$TMPD/in"
+        set -m
+        FAKE_PIN_MODE="$1" FAKE_PIN_PIDFILE="$TMPD/fake.pid" \
+            "$BIN" --fallback-pinentry "$FAKE" < "$TMPD/in" > "$TMPD/out" &
+        pe=$!
+        set +m
+        while [ ! -s "$2" ]; do
+            tick=$((tick + 1))
+            if [ "$tick" -gt 50 ]; then
+                kill -9 "$pe" 2>/dev/null || true
+                fail "mode $1: the fake pinentry never received GETPIN"
+            fi
+            sleep 0.1
+        done
+        victim="$(cat "$2")"
+        kill -INT "$pe"
+        tick=0
+        while kill -0 "$pe" 2>/dev/null; do
+            tick=$((tick + 1))
+            if [ "$tick" -gt 30 ]; then
+                kill -9 "$pe" "$victim" 2>/dev/null || true
+                fail "mode $1: still running 3 s after SIGINT"
+            fi
+            sleep 0.1
+        done
+        wait "$pe" 2>/dev/null || true
+        tick=0
+        while kill -0 "$victim" 2>/dev/null; do
+            tick=$((tick + 1))
+            if [ "$tick" -gt 10 ]; then
+                kill -9 "$victim" 2>/dev/null || true
+                fail "mode $1: the fallback's dialog process outlived a SIGINT sent to us"
+            fi
+            sleep 0.1
+        done
+    }
+    sigint_case hang "$TMPD/fake.pid"
+    # A wrapper script that runs pinentry-mac without exec: the dialog is a
+    # grandchild holding our pipes.
+    sigint_case hang-child "$TMPD/fake.pid.child"
 
     echo "PASS: fallback relay, forwarding, cancel, child failure and SIGINT"
 fi
