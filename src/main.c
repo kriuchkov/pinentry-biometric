@@ -17,7 +17,7 @@
 #include "secure_mem.h"
 #include "state.h"
 
-#define PE_VERSION "0.1.1"
+#define PE_VERSION "0.2.0"
 
 static bool g_debug = false;
 static const char *g_fallback_path = NULL;
