@@ -43,58 +43,42 @@
   <span>&nbsp;•&nbsp;</span>
   <a href="#degraded-modes"><strong>Degraded Modes</strong></a>
   <span>&nbsp;•&nbsp;</span>
-  <a href="#options-and-defaults"><strong>Options</strong></a>
+  <a href="#options"><strong>Options</strong></a>
   <span>&nbsp;•&nbsp;</span>
   <a href="DESIGN.md"><strong>Design</strong></a>
   <span>&nbsp;•&nbsp;</span>
   <a href="SECURITY.md"><strong>Security</strong></a>
 </p>
 
-It speaks the Assuan/pinentry protocol to `gpg-agent`, stores your GPG passphrase in the macOS Keychain, and requires Touch ID (with the system's account-password fallback) before handing the passphrase to the agent.
+It speaks the Assuan/pinentry protocol to `gpg-agent`, keeps your GPG passphrase in the macOS Keychain, and hands it to the agent only after Touch ID or your account password. It links only macOS system frameworks and the C library. macOS 12+, universal binary (Apple Silicon and Intel).
 
-No third-party build dependencies: it links only macOS system frameworks and the C standard library. Target: macOS 12.0+ (Monterey), builds a universal binary (Apple Silicon and Intel).
-
-**Runtime prerequisite:** the *first* passphrase entry for a key is proxied to an existing `pinentry-mac` (see [DESIGN.md](DESIGN.md) for why). Without one installed, `GETPIN` fails and the Keychain can never be populated — so pinentry-biometric is not a standalone replacement:
+**Requires pinentry-mac.** The first passphrase entry for each key is proxied to it (see [DESIGN.md](DESIGN.md) for why); without it, nothing can ever be saved to the Keychain. After that, the passphrase comes from the Keychain.
 
 ```sh
 brew install pinentry-mac        # or install GPG Suite
 ```
-
-Only the first entry per key needs it; afterwards the passphrase comes from the Keychain behind Touch ID.
 
 ## Build
 
 Requires the Xcode Command Line Tools (`xcode-select --install`).
 
 ```sh
-make            # builds and signs build/pinentry-biometric
-make test       # builds and runs the pure-C unit tests (no Keychain, no Touch ID)
-```
-
-Integration and security checks (see `tests/`):
-
-```sh
-tests/integration.sh                  # automated protocol tests
-INTERACTIVE=1 tests/integration.sh    # + gpg end-to-end (needs a live finger)
+make                                  # build and sign build/pinentry-biometric
+make test                             # unit tests (no Keychain, no Touch ID)
+tests/integration.sh                  # protocol tests against the built binary
+INTERACTIVE=1 tests/integration.sh    # + gpg end-to-end (needs gpg and a finger)
 tests/security_check.sh               # link set, Hardened Runtime, log masking
 ```
 
-The integration script needs `gpg`/`gpgconf` for its interactive step; the automated steps need only the built binary.
-
 ## Signing
 
-`make` signs the binary itself — ad-hoc, with Hardened Runtime. That is not packaging polish: the biometric check runs *inside this process*, so without Hardened Runtime anyone able to set `DYLD_INSERT_LIBRARIES` could replace the LocalAuthentication call and take the passphrase with no prompt at all. `tests/security_check.sh` fails the build if the flag is missing.
+`make` signs the binary ad-hoc with Hardened Runtime. The Touch ID check runs inside this process, so without Hardened Runtime `DYLD_INSERT_LIBRARIES` could replace it and take the passphrase with no prompt. `tests/security_check.sh` fails if the flag is missing.
 
-**Why a stable signature matters.** The Keychain access-control list binds the saved passphrase item to the *code signature* of the program that created it. With an ad-hoc signature, every rebuild produces a different signing identity, so after each rebuild macOS treats the binary as a new program and asks you to authorize Keychain access again. If you have a Developer ID certificate, use it — the identity then survives rebuilds:
+The Keychain item trusts the code signature that created it. An ad-hoc signature changes with every rebuild, so after each one macOS asks you to authorize the binary again. A Developer ID keeps the identity across rebuilds:
 
 ```sh
 make CODESIGN_ID="Developer ID Application: Your Name (TEAMID)"
-```
-
-Verify the signature at any time:
-
-```sh
-codesign -dv build/pinentry-biometric
+codesign -dv build/pinentry-biometric    # inspect the signature
 ```
 
 ## Install
@@ -103,73 +87,54 @@ codesign -dv build/pinentry-biometric
 make && sudo make install       # installs to /usr/local/bin
 ```
 
-Build first as yourself: `install` depends on the build, so a bare `sudo make install` in a fresh checkout compiles and signs as root and leaves a root-owned `build/` behind.
+Build as yourself first: a bare `sudo make install` builds and signs as root and leaves a root-owned `build/`.
 
-Install into a **root-owned** directory. The Keychain item trusts one code signature, and after every ad-hoc rebuild macOS asks you to authorize the new one (see [Signing](#signing)). A binary in a directory your own user can write to — `~/.local/bin`, or `/opt/homebrew/bin` on a typical Mac — can be swapped by any process running as you, and the next Keychain panel looks exactly like the one you expect after a rebuild; "Always Allow" then hands the passphrase to the replacement with no Touch ID at all. A Keychain panel when you have *not* just rebuilt or upgraded is the signal to press Deny. (`make install PREFIX=…` still works for testing.)
+Install into a **root-owned** directory. In one you can write to (`~/.local/bin`, or `/opt/homebrew/bin` on a typical Mac), any process running as you can swap the binary, and the Keychain panel it triggers looks like the one you expect after a rebuild; "Always Allow" then gives it the passphrase without Touch ID. A Keychain panel when you have *not* just rebuilt or upgraded is the signal to press Deny. (`make install PREFIX=…` still works for testing.)
 
-Then point gpg-agent at it — add to `~/.gnupg/gpg-agent.conf`:
+Point gpg-agent at it in `~/.gnupg/gpg-agent.conf`:
 
 ```
 pinentry-program /usr/local/bin/pinentry-biometric
 ```
 
-and restart the agent:
-
-```sh
-gpgconf --kill gpg-agent
-```
+and restart the agent with `gpgconf --kill gpg-agent`.
 
 ## Migration from pinentry-mac
 
-pinentry-biometric uses the same Keychain item layout as pinentry-mac (generic password, service `GnuPG`, account = keygrip), so in the best case your existing saved passphrase is picked up directly.
+The item layout is the same as pinentry-mac's (generic password, service `GnuPG`, account = keygrip), but an item belongs to the signature that created it: reading one made by pinentry-mac raises the "wants to use your confidential information" panel every time. Re-save it under this binary:
 
-However, a Keychain item is *owned* by the code signature that created it. If your existing `GnuPG` item was created by pinentry-mac, our binary cannot read it silently: macOS raises the classic "wants to use your confidential information" dialog every time. There is no automatic migration — re-save the passphrase under our identity:
-
-1. Delete the old item (per keygrip):
-   ```sh
-   security delete-generic-password -s GnuPG -a <keygrip>
-   ```
-2. Trigger a signature (`gpg --clearsign`), enter the passphrase in the first-entry dialog, and choose Save. The item is recreated under pinentry-biometric's code signature, and later reads go through Touch ID.
+1. Delete the old item: `security delete-generic-password -s GnuPG -a <keygrip>`
+2. Sign something (`gpg --clearsign`), enter the passphrase in the first-entry dialog and choose Save. Later reads go through Touch ID.
 
 ## Degraded modes
 
-- **No Touch ID available** (desktop Mac, closed lid, external keyboard without a sensor): in the default `user-presence` mode the system dialog falls back to your account password. Nothing to configure.
-- **Biometry unavailable in `biometry-current-set` mode** (no sensor, or Touch ID locked out after repeated failures): authentication cannot succeed, and the program falls back to the first-entry passphrase prompt rather than failing. You are never let in without *some* credential, but the mode is not a hard "biometry or nothing".
-- **SSH session / no GUI**: there is no Aqua session to show a dialog in, so GETPIN fails fast with an `ERR` instead of hanging. Use a curses pinentry for remote sessions.
+- **No Touch ID** (desktop Mac, closed lid): `user-presence` falls back to your account password.
+- **`biometry-current-set` without biometry** (no sensor, or Touch ID locked out): you get the first-entry passphrase prompt instead of an error. Some credential is always required, but the mode is not "biometry or nothing".
+- **SSH session / no GUI**: GETPIN fails fast with `ERR` instead of hanging. Use a curses pinentry remotely.
 
 ## Threat model
 
-pinentry-biometric does **not** verify who its parent process is — gpg-agent restarts freely, and parent checks are trivially spoofable anyway. That means *any process running as your user* can start this program and ask for the Keychain item. The defenses, in the order they actually matter:
+Any process running as you can start this program and ask for the passphrase; there is no parent check, because it would be spoofable. What protects the passphrase:
 
-1. the **Keychain ACL** — macOS releases the item without a password panel only to a binary whose code signature matches the one that created it. A same-uid attacker calling `SecItemCopyMatching` (or `security find-generic-password`) directly gets the panel, not the passphrase;
-2. the **user-presence check** — before the item is read, this program requires Touch ID (or your account password) via LocalAuthentication. Note that this check runs *in this process*: it is meaningful only because Hardened Runtime prevents code injection into it. See [SECURITY.md](SECURITY.md);
-3. the **Touch ID prompt** — treat a prompt you did not trigger as the signal to press Cancel. Judge it by the keygrip and by timing, **not** by the description text: that text is supplied by whoever is asking (any process may send `SETDESC`), and is only filtered to printable ASCII.
+1. the **Keychain ACL**: only a binary with the creating signature reads the item without a password panel;
+2. the **user-presence check** before the read, which Hardened Runtime keeps from being patched out;
+3. **you**: cancel a Touch ID prompt you did not trigger. Judge it by the keygrip and timing, not by the description, which the requester writes.
 
-**What this does not stop: targeted malware running as your user.** These defenses stop *opportunistic* access — another app or a script reading the Keychain item, or a process asking for the passphrase at a moment you did not expect. They do not stop an attacker who can already run code as you and is willing to wait:
+This stops *silent* access. It does not stop targeted malware running as you: it can wrap `pinentry-program` and relay the session, or inject into an unhardened Homebrew gpg-agent. No pinentry prevents that, pinentry-mac included. Details and other limitations: [SECURITY.md](SECURITY.md).
 
-- it can point `pinentry-program` in `~/.gnupg/gpg-agent.conf` at a wrapper that runs this program and relays the session — the Touch ID prompt then shows the right keygrip at exactly the moment you ran gpg, and the wrapper keeps the passphrase;
-- the passphrase's destination, gpg-agent, is not hardened in a typical Homebrew install (ad-hoc signature, no Hardened Runtime), so the attacker can restart it with `DYLD_INSERT_LIBRARIES` and read every passphrase after you approve.
+No network frameworks are linked. Secrets are wiped with `memset_s` after use and core dumps are off; heap secrets are `mlock`ed best effort, short-lived stack buffers are wiped but not locked.
 
-No pinentry can prevent this; the same attacks work against pinentry-mac. What pinentry-biometric adds is that the stored passphrase is never released *silently*.
+## Options
 
-The binary never opens network connections, and `tests/security_check.sh` checks the link set for network frameworks. Secrets are wiped with `memset_s` immediately after use and core dumps are disabled at startup; heap buffers holding secrets are `mlock`ed on a best-effort basis, while short-lived stack buffers in the protocol and fallback paths are wiped but not locked.
+- `--access-control=user-presence` (default): Touch ID or account password.
+- `--access-control=biometry-current-set`: Touch ID only. This program enforces it, not the Secure Enclave (an ad-hoc signed CLI cannot use the data-protection keychain), so changing enrolled fingerprints does not invalidate the item.
+- `--fallback-pinentry <path>`: the pinentry-mac to use; must be absolute. It receives the passphrase you type, and the default search (next to this binary, then the Homebrew and GPG Suite prefixes) covers directories that are often user-writable, so pin a root-owned path if that matters to you.
+- `--debug`: protocol log, with data lines masked as `D ***`.
+- `--version`, `--help`.
 
-## Access-control mode
+The Keychain is used only when gpg-agent allows an external passphrase cache, which is its default. With `no-allow-external-cache` in `gpg-agent.conf`, every passphrase is typed and nothing is read from or saved to the Keychain.
 
-The user-presence policy is selectable via `--access-control=user-presence|biometry-current-set`:
-
-- `user-presence` (**default**): Touch ID *or* account password. Recommended.
-- `biometry-current-set` (stricter): Touch ID only, no password fallback. Note: the passphrase item lives in the login keychain (an ad-hoc signed CLI cannot use the data-protection keychain — no entitlements), so the biometry requirement is enforced by this program rather than the Secure Enclave, and enrollment changes do not invalidate the item.
-
-## Options and defaults
-
-CLI flags: `--version`, `--help`, `--debug` (protocol log with `D ***` payload masking — secrets never reach the log), `--fallback-pinentry <path>`, `--access-control=<mode>`.
-
-The fallback pinentry is fully trusted: it receives the passphrase you type. It is located next to our own binary and then in the standard Homebrew and GPG Suite prefixes — directories that are user-writable on a typical single-admin Mac. If that matters to you, pin it explicitly to a root-owned path with `--fallback-pinentry` in `gpg-agent.conf`; the path must be absolute.
-
-The Keychain is used only when gpg-agent allows an external passphrase cache, which it does by default. With `no-allow-external-cache` in `gpg-agent.conf`, every passphrase is typed into the first-entry dialog and nothing is read from or saved to the Keychain.
-
-To stop using the Keychain altogether — nothing is read from it and the save prompt disappears; items already saved stay until you delete them (see [Uninstall](#uninstall)):
+To turn the Keychain off entirely (items already saved stay until you delete them):
 
 ```sh
 defaults write local.pinentry-biometric DisableKeychain -bool true
@@ -182,7 +147,7 @@ security delete-generic-password -s GnuPG -a <keygrip>   # per saved key
 sudo rm /usr/local/bin/pinentry-biometric
 ```
 
-Remove (or change) the `pinentry-program` line in `~/.gnupg/gpg-agent.conf` and run `gpgconf --kill gpg-agent`.
+Remove the `pinentry-program` line from `~/.gnupg/gpg-agent.conf` and run `gpgconf --kill gpg-agent`.
 
 ## License
 

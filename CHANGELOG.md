@@ -9,40 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `tests/integration.sh` drives the first-entry fallback against a scripted
-  pinentry (`tests/fake-pinentry.sh`): passphrase relay across several `D`
-  lines, forwarding of `SET*`/`OPTION`s, the deliberate non-forwarding of
-  `SETKEYINFO` and `allow-external-password-cache`, cancel, and a child that
-  dies mid-session. Skipped where there is no GUI session.
+- Automated tests of the first-entry fallback against a scripted pinentry
+  (`tests/fake-pinentry.sh`); skipped where there is no GUI session.
 
 ### Fixed
 
 - `no-allow-external-cache` in `gpg-agent.conf` was ignored: the Keychain
-  was read and the save offered whenever `SETKEYINFO` carried a keygrip,
-  and `OPTION allow-external-password-cache` only controlled the
-  `PASSWORD_FROM_CACHE` status line. Both now require the option, as in
-  reference pinentry. gpg-agent sends it by default, so nothing changes
-  unless you opted out.
-- Interrupting gpg while the first-entry dialog was open left that
-  pinentry-mac dialog on screen: gpg-agent cancels the pinentry with
-  SIGINT, which killed only us. The fallback child is now killed with us.
+  was still read and the save offered. Both now require gpg-agent's
+  `allow-external-password-cache`, as in reference pinentry. gpg-agent
+  sends it by default, so nothing changes unless you opted out.
+- Interrupting gpg left the pinentry-mac first-entry dialog on screen. The
+  fallback child is now killed with us.
 
 ### Changed
 
-- `SETKEYINFO` is validated instead of having any `<char>/` prefix
-  stripped: `n/` and `s/` need a 40-hex-digit keygrip, `u/` (a client's
-  cache ID, such as gpg's `S<salt>` for symmetric encryption) one printable
-  word. An id too long to store is rejected rather than truncated, so two
-  ids sharing a prefix can no longer map to one Keychain item. Anything
-  rejected is treated like `--clear`: no Keychain, plain first-entry
-  prompt.
-- Secret buffers are mapped on pages of their own instead of coming from
-  `malloc`, so freeing one no longer `munlock`s a page another live secret
-  shares. SECURITY.md drops that caveat.
-- The fallback pinentry inherits only stdin, stdout and stderr; any other
-  descriptor open in our process used to leak into it.
-- `--fallback-pinentry` must be an absolute path; a relative one, resolved
-  against gpg-agent's working directory, is now a startup error.
+- `SETKEYINFO` is validated: `n/` and `s/` need a 40-hex-digit keygrip,
+  `u/` one printable word (a client's cache ID, such as gpg's `S<salt>`).
+  An id too long to store is rejected rather than truncated, so two long
+  ids can no longer share a Keychain item. Anything rejected is treated
+  like `--clear`.
+- Each secret buffer gets pages of its own, so freeing one no longer
+  unlocks the memory of another.
+- The fallback pinentry inherits only stdin, stdout and stderr.
+- `--fallback-pinentry` must be an absolute path.
 
 ## [0.1.1] - 2026-09-24
 
