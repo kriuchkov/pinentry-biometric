@@ -1,0 +1,8 @@
+# Proposes new major versions of the actions in .github/workflows (the
+# workflow uses major tags such as @v4) as pull requests.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-26
+
+### Added
+
+- Automated tests of the first-entry fallback against a scripted pinentry
+  (`tests/fake-pinentry.sh`); skipped where there is no GUI session.
+
+### Fixed
+
+- `no-allow-external-cache` in `gpg-agent.conf` was ignored: the Keychain
+  was still read and the save offered. Both now require gpg-agent's
+  `allow-external-password-cache`, as in reference pinentry. gpg-agent
+  sends it by default, so nothing changes unless you opted out.
+- Interrupting gpg left the pinentry-mac first-entry dialog on screen. The
+  fallback pinentry is now killed with us, including one started through
+  a wrapper script.
+
+### Changed
+
+- `SETKEYINFO` is validated: `n/` and `s/` need a 40-hex-digit keygrip
+  (a lower-case one is folded to upper case, so it finds the same Keychain
+  item), `u/` one printable word (a client's cache ID, such as gpg's
+  `S<salt>`).
+  An id too long to store is rejected rather than truncated, so two long
+  ids can no longer share a Keychain item. Anything rejected is treated
+  like `--clear`.
+- Each secret buffer gets pages of its own, so freeing one no longer
+  unlocks the memory of another.
+- The fallback pinentry inherits only stdin, stdout and stderr, and starts
+  with default signal handling instead of our ignored `SIGPIPE`.
+- Started with stdin, stdout or stderr closed, we open `/dev/null` in its
+  place, so no other descriptor can end up there.
+- `--fallback-pinentry` must be an absolute path.
+
 ## [0.1.1] - 2026-09-24
 
 ### Fixed

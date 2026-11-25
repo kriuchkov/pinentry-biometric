@@ -65,6 +65,33 @@ static void test_decode_empty(void)
     ASSERT(s[0] == '\0');
 }
 
+/* --- percent encode ----------------------------------------------------- */
+
+static void test_encode_escapes(void)
+{
+    const unsigned char in[] = "a%b\rc\nd";
+    char out[32];
+    size_t used;
+    size_t n = assuan_percent_encode(in, sizeof in - 1, out, sizeof out, &used);
+    ASSERT(used == sizeof in - 1);
+    ASSERT(n == 13 && memcmp(out, "a%25b%0Dc%0Ad", n) == 0);
+}
+
+/* A full buffer stops the encoder at an escape boundary, never inside an
+ * escape, and *used says where to resume. */
+static void test_encode_cap_boundary(void)
+{
+    const unsigned char in[] = "ab%c";
+    char out[8];
+    size_t used;
+    ASSERT(assuan_percent_encode(in, 4, out, 4, &used) == 2);  /* "%25" won't fit */
+    ASSERT(used == 2 && memcmp(out, "ab", 2) == 0);
+    ASSERT(assuan_percent_encode(in, 4, out, 5, &used) == 5);  /* exactly fits */
+    ASSERT(used == 3 && memcmp(out, "ab%25", 5) == 0);
+    ASSERT(assuan_percent_encode(in, 4, out, 0, &used) == 0);
+    ASSERT(used == 0);
+}
+
 /* --- data escaping ------------------------------------------------------ */
 
 static void test_send_data_escaping(void)
@@ -98,6 +125,29 @@ static void test_send_data_plain(void)
     ASSERT(assuan_send_data(f, (const unsigned char *)"secret", 6) == 0);
     fclose(f);
     ASSERT(strcmp(out, "D secret\n") == 0);
+    free(out);
+}
+
+/* A payload longer than one line is split across D lines, and an escape
+ * that would cross the line limit moves to the next line whole. */
+static void test_send_data_split(void)
+{
+    enum { PAYLOAD_MAX = ASSUAN_LINE_MAX - 2 };   /* bytes after "D " */
+    unsigned char payload[PAYLOAD_MAX + 2];
+    memset(payload, 'x', PAYLOAD_MAX - 1);
+    payload[PAYLOAD_MAX - 1] = '%';               /* "%25" would need 3 */
+    payload[PAYLOAD_MAX] = 'y';
+    char *out = NULL;
+    size_t outsz = 0;
+    FILE *f = open_memstream(&out, &outsz);
+    ASSERT(f != NULL);
+    ASSERT(assuan_send_data(f, payload, PAYLOAD_MAX + 1) == 0);
+    fclose(f);
+    ASSERT(outsz == 2 + (PAYLOAD_MAX - 1) + 1 + strlen("D %25y\n"));
+    ASSERT(memcmp(out, "D ", 2) == 0);
+    for (size_t i = 0; i < PAYLOAD_MAX - 1; i++)
+        ASSERT(out[2 + i] == 'x');
+    ASSERT(strcmp(out + 2 + (PAYLOAD_MAX - 1), "\nD %25y\n") == 0);
     free(out);
 }
 
@@ -250,8 +300,11 @@ main(void)
     RUN(test_decode_percent25);
     RUN(test_decode_invalid_escape);
     RUN(test_decode_empty);
+    RUN(test_encode_escapes);
+    RUN(test_encode_cap_boundary);
     RUN(test_send_data_escaping);
     RUN(test_send_data_plain);
+    RUN(test_send_data_split);
     RUN(test_read_line_lf);
     RUN(test_read_line_crlf);
     RUN(test_read_line_eof_partial);

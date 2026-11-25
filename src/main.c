@@ -17,7 +17,7 @@
 #include "secure_mem.h"
 #include "state.h"
 
-#define PE_VERSION "0.1.1"
+#define PE_VERSION "0.2.0"
 
 static bool g_debug = false;
 static const char *g_fallback_path = NULL;
@@ -75,21 +75,25 @@ static void cmd_getpin(FILE *out, pe_state *st)
      * Deleting the item stays gated on having served it from this process,
      * which required passing the user-presence check: otherwise any process
      * could destroy a stored passphrase with SETERROR + GETPIN and no
-     * authentication at all. */
+     * authentication at all.
+     *
+     * Reading and saving both need the agent's allow-external-password-cache:
+     * a user who set no-allow-external-cache in gpg-agent.conf asked to be
+     * prompted every time, and the Keychain is exactly such a cache. */
+    bool use_keychain = state_external_cache_allowed(st) && !keychain_disabled();
     bool first_entry_forced = st->error[0] && st->keygrip[0];
     if (first_entry_forced && strcmp(g_kc_served, st->keygrip) == 0) {
         keychain_delete(st->keygrip);
         g_kc_served[0] = '\0';
     }
-    if (!first_entry_forced && st->keygrip[0] && !keychain_disabled()) {
+    if (!first_entry_forced && use_keychain) {
         char reason[PE_FIELD_MAX + 64];
         build_reason(st, reason, sizeof(reason));
         unsigned char *pw = NULL;
         size_t len = 0;
         kc_status ks = keychain_lookup(st->keygrip, reason, g_ac, &pw, &len);
         if (ks == KC_OK) {
-            if (st->allow_external_cache)
-                assuan_send_status(out, "PASSWORD_FROM_CACHE", "");
+            assuan_send_status(out, "PASSWORD_FROM_CACHE", "");
             /* A failed send must not be followed by OK: the agent would
              * read that as a successful empty passphrase and then delete
              * this very item as "stale". */
@@ -131,7 +135,7 @@ static void cmd_getpin(FILE *out, pe_state *st)
         assuan_send_err(out, PE_ERR_INTERNAL, "fallback pinentry failed");
         return;
     }
-    if (st->keygrip[0] && !keychain_disabled() &&
+    if (use_keychain &&
         ui_confirm("pinentry-biometric",
                    "Save passphrase to Keychain (unlock with Touch ID)?",
                    "Save", "Don't Save") == 0) {
@@ -219,17 +223,6 @@ static void cmd_getinfo(FILE *out, const pe_state *st, const char *what)
         assuan_send_err(out, PE_ERR_INTERNAL, "could not send data");
 }
 
-static bool is_set_cmd(const char *cmd)
-{
-    static const char *const names[] = { "SETDESC",   "SETPROMPT", "SETTITLE",
-                                         "SETOK",     "SETCANCEL", "SETNOTOK",
-                                         "SETERROR",  "SETKEYINFO" };
-    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
-        if (strcasecmp(cmd, names[i]) == 0)
-            return true;
-    return false;
-}
-
 /* Accepted but intentionally inert: behave as plain GETPIN. */
 static bool is_ignored_set_cmd(const char *cmd)
 {
@@ -250,7 +243,7 @@ static void usage(void)
          "  --version                 print version and exit\n"
          "  --help                    show this help and exit\n"
          "  --debug                   log protocol to stderr (secrets masked)\n"
-         "  --fallback-pinentry <p>   pinentry-mac binary for first entry\n"
+         "  --fallback-pinentry <p>   pinentry-mac for first entry (absolute path)\n"
          "  --access-control=user-presence|biometry-current-set\n"
          "                            Keychain item ACL (default user-presence)\n"
          "\n"
@@ -307,6 +300,13 @@ int main(int argc, char **argv)
         }
         /* anything else (e.g. --display <d>) is accepted and ignored */
     }
+    /* The fallback receives the typed passphrase: a relative path would be
+     * resolved against whatever directory gpg-agent happens to run in. */
+    if (g_fallback_path != NULL && g_fallback_path[0] != '/') {
+        fprintf(stderr, "pinentry-biometric: --fallback-pinentry needs an "
+                        "absolute path\n");
+        return 2;
+    }
 
     secure_process_init();
     signal(SIGPIPE, SIG_IGN);
@@ -339,16 +339,19 @@ int main(int argc, char **argv)
         if (strcasecmp(cmd, "OPTION") == 0) {
             state_handle_option(&st, args);
             assuan_send_ok(out, NULL);
-        } else if (is_set_cmd(cmd)) {
+        } else if (is_ignored_set_cmd(cmd)) {
+            assuan_send_ok(out, NULL);
+        } else if (strncasecmp(cmd, "SET", 3) == 0) {
+            /* state.c alone knows which SET* commands exist: one it does
+             * not store is an unknown command, never a silent OK — a
+             * dropped SETKEYINFO would disable the Keychain path unnoticed,
+             * as a lowercase one once did when this file kept its own list
+             * and matched it differently. */
             assuan_percent_decode(args);
-            /* Never answer OK for a value we failed to store: a dropped
-             * SETKEYINFO silently disables the Keychain path entirely. */
             if (state_handle_set(&st, cmd, args) == 0)
                 assuan_send_ok(out, NULL);
             else
-                assuan_send_err(out, PE_ERR_INTERNAL, "could not store value");
-        } else if (is_ignored_set_cmd(cmd)) {
-            assuan_send_ok(out, NULL);
+                assuan_send_err(out, PE_ERR_ASS_UNKNOWN_CMD, "Unknown command");
         } else if (strcasecmp(cmd, "GETPIN") == 0) {
             cmd_getpin(out, &st);
         } else if (strcasecmp(cmd, "CONFIRM") == 0) {

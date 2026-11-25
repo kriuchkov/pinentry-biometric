@@ -44,8 +44,9 @@ kc_status keychain_store(const char *keygrip, const unsigned char *pw,
 /* Delete the item for keygrip. KC_NOT_FOUND if absent. */
 kc_status keychain_delete(const char *keygrip);
 
-/* True if saving is disabled via `defaults` domain local.pinentry-biometric,
- * key DisableKeychain (bool). */
+/* True if the Keychain is switched off altogether — no lookup, no save
+ * offer — via `defaults` domain local.pinentry-biometric, key
+ * DisableKeychain (bool). */
 bool keychain_disabled(void);
 
 #endif /* PE_KEYCHAIN_H */

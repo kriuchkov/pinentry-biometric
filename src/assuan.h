@@ -44,6 +44,14 @@ void assuan_split(char *line, char **cmd, char **args);
  * Returns the decoded length; result is NUL-terminated. */
 size_t assuan_percent_decode(char *s);
 
+/* Percent-escape '%', CR and LF of data[0..len) into dst, writing at most
+ * cap bytes and never splitting an escape; no NUL terminator. Returns the
+ * bytes written and sets *used to the input bytes consumed, which is less
+ * than len when dst filled up. The one encoder behind D lines and the
+ * fallback's forwarded arguments. */
+size_t assuan_percent_encode(const unsigned char *data, size_t len,
+                             char *dst, size_t cap, size_t *used);
+
 /* All senders write a full line and fflush(out). Return 0 on success. */
 int assuan_send_ok(FILE *out, const char *msg);              /* "OK[ msg]" */
 int assuan_send_err(FILE *out, unsigned int code, const char *desc);

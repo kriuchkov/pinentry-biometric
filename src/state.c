@@ -61,6 +61,36 @@ int state_handle_option(pe_state *s, const char *args)
     return 0;
 }
 
+static bool is_hex(unsigned char c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') ||
+           (c >= 'a' && c <= 'f');
+}
+
+/* A SETKEYINFO value as gpg-agent builds it in agent_askpin and
+ * agent_get_passphrase (gnupg agent/call-pinentry.c): "<mode>/<id>".
+ * Modes n (normal) and s (ssh) carry a keygrip, 40 hex digits. Mode u
+ * carries the client's GET_PASSPHRASE cache ID (agent/command.c) — for
+ * gpg's symmetric encryption "S" plus 16 hex digits of salt
+ * (g10/passphrase.c) — so it only has to be one printable word. An id too
+ * long to store is rejected, not truncated: ids that share a prefix must
+ * not share a Keychain item. */
+static bool keyinfo_valid(const char *ki)
+{
+    if ((ki[0] != 'n' && ki[0] != 's' && ki[0] != 'u') || ki[1] != '/')
+        return false;
+    const char *id = ki + 2;
+    size_t n = strlen(id);
+    if (n == 0 || n >= PE_KEYGRIP_MAX)
+        return false;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)id[i];
+        if (ki[0] == 'u' ? (c <= ' ' || c >= 0x7f) : !is_hex(c))
+            return false;
+    }
+    return ki[0] == 'u' || n == 40;
+}
+
 int state_handle_set(pe_state *s, const char *cmd, char *args)
 {
     const struct { const char *cmd; char *dst; size_t cap; } map[] = {
@@ -83,18 +113,39 @@ int state_handle_set(pe_state *s, const char *cmd, char *args)
         }
     }
     if (strcasecmp(cmd, "SETKEYINFO") == 0) {
-        /* "<mode>/<KEYGRIP>" (n/u/s): store the keygrip sans prefix.
-         * Anything else clears it — notably "--clear", which gpg-agent sends
-         * before every prompt that must not be cached, including new
-         * passphrases and their re-entry (gnupg agent/call-pinentry.c,
-         * agent_askpin; pinentry/pinentry.c, cmd_setkeyinfo). Storing
-         * "--clear" as a keygrip would save a new passphrase under that
-         * shared name and answer the re-entry prompt from the Keychain. */
-        if (args[0] == '\0' || args[1] != '/')
-            memset(s->keygrip, 0, sizeof s->keygrip);
-        else
+        /* Store the id of a well-formed "<mode>/<id>" sans prefix (see
+         * keyinfo_valid). Anything else clears it — notably "--clear",
+         * which gpg-agent sends before every prompt that must not be
+         * cached, including new passphrases and their re-entry (gnupg
+         * agent/call-pinentry.c, agent_askpin; pinentry/pinentry.c,
+         * cmd_setkeyinfo). Storing "--clear" as a keygrip would save a new
+         * passphrase under that shared name and answer the re-entry prompt
+         * from the Keychain. */
+        if (keyinfo_valid(args)) {
             field_copy(s->keygrip, sizeof s->keygrip, args + 2);
+            /* gpg-agent sends a keygrip in upper case. Fold a lower-case
+             * one onto it, or the same key would get a second Keychain
+             * account. A u/ cache ID is the client's own and stays as is. */
+            if (args[0] != 'u') {
+                for (char *p = s->keygrip; *p != '\0'; p++) {
+                    if (*p >= 'a' && *p <= 'f')
+                        *p = (char)(*p - 'a' + 'A');
+                }
+            }
+        } else {
+            memset(s->keygrip, 0, sizeof s->keygrip);
+        }
         return 0;
     }
     return -1;
+}
+
+/* Reference: pinentry/pinentry.c cmd_getpin gates both
+ * password_cache_lookup and password_cache_save on
+ * "pinentry.allow_external_password_cache && pinentry.keyinfo";
+ * gpg-agent sends the option from start_pinentry only when
+ * opt.allow_external_cache is set (gnupg agent/call-pinentry.c). */
+bool state_external_cache_allowed(const pe_state *s)
+{
+    return s->allow_external_cache && s->keygrip[0] != '\0';
 }
