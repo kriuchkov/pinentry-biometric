@@ -30,7 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   like `--clear`.
 - Each secret buffer gets pages of its own, so freeing one no longer
   unlocks the memory of another.
-- The fallback pinentry inherits only stdin, stdout and stderr.
+- The fallback pinentry inherits only stdin, stdout and stderr, and starts
+  with default signal handling instead of our ignored `SIGPIPE`.
+- Started with stdin, stdout or stderr closed, we open `/dev/null` in its
+  place, so no other descriptor can end up there.
 - `--fallback-pinentry` must be an absolute path.
 
 ## [0.1.1] - 2026-09-24

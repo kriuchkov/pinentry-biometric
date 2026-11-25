@@ -27,6 +27,24 @@ while IFS= read -r line; do
             if { : >&3; } 2> /dev/null; then
                 log "FD3 open"
             fi
+            # With the binary's stderr closed, ours must be /dev/null, not
+            # some descriptor that took fd 2's place.
+            if [ /dev/fd/2 -ef /dev/null ]; then
+                log "FD2 devnull"
+            fi
+            # exec keeps an ignored signal ignored; we must start with the
+            # defaults. A child killed by signal N exits 128+N, one that
+            # ignores it carries on.
+            ign=""
+            yes 2> /dev/null | head -n 1 > /dev/null
+            [ "${PIPESTATUS[0]}" -eq 141 ] || ign="$ign PIPE"
+            { sh -c 'kill -INT $$; exit 0'; } 2> /dev/null
+            [ $? -eq 130 ] || ign="$ign INT"
+            { sh -c 'kill -TERM $$; exit 0'; } 2> /dev/null
+            [ $? -eq 143 ] || ign="$ign TERM"
+            if [ -n "$ign" ]; then
+                log "SIGIGN$ign"
+            fi
             case "${FAKE_PIN_MODE:-ok}" in
                 ok)
                     # A status line to skip, then the passphrase "pass%word",

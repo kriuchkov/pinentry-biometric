@@ -18,7 +18,9 @@ frameworks only. Framework calls live in the two `.m` files; `assuan.c`,
   reference pinentry does; unknown options get `OK`. `SETKEYINFO` keeps an
   id only in the forms gpg-agent sends (`n/` or `s/` + 40 hex digits, `u/` +
   one printable word); anything else clears it, like `--clear`.
-- **`secure_mem.c`** — core dumps off (`RLIMIT_CORE` 0). Each secret gets
+- **`secure_mem.c`** — process hardening at startup: core dumps off
+  (`RLIMIT_CORE` 0), and `/dev/null` on any of fd 0–2 that is closed, so no
+  pipe or framework file can take the place of stdio. Each secret gets
   pages of its own from `mmap` (on a shared `malloc` page, freeing one
   secret would `munlock` its neighbours), `mlock`ed best effort, wiped with
   `memset_s` before `munlock`/`munmap`.
@@ -43,13 +45,17 @@ frameworks only. Framework calls live in the two `.m` files; `assuan.c`,
   `/usr/local/bin`, GPG Suite's
   `/usr/local/MacGPG2/libexec/pinentry-mac.app/Contents/MacOS/`; an explicit
   `--fallback-pinentry` must be absolute. The child inherits only stdio
-  (`POSIX_SPAWN_CLOEXEC_DEFAULT`), receives the relevant `SET*` fields and
-  tty/locale options and one `GETPIN`, and the passphrase comes back in a
-  `secure_alloc` buffer. The child is reaped on every error path and dies
-  with us: gpg-agent cancels a pinentry with SIGINT (libassuan
+  (`POSIX_SPAWN_CLOEXEC_DEFAULT`) and starts with default signal
+  dispositions, receives the relevant `SET*` fields and tty/locale options
+  and one `GETPIN`, and the passphrase comes back in a `secure_alloc`
+  buffer. The child is reaped on every error path and dies with us:
+  gpg-agent cancels a pinentry with SIGINT (libassuan
   `assuan_pipe_kill_server`, called from `watch_sock` in gnupg
   `agent/call-pinentry.c`), so while a child runs, SIGINT and SIGTERM kill
-  it before we exit and its dialog does not stay on screen.
+  it before we exit and its dialog does not stay on screen. The handler may
+  run on any thread (a signal mask is per thread), so it shares the child's
+  pid with the main thread through atomics rather than relying on blocked
+  signals.
 
 ## Decision: proxy first entry to pinentry-mac
 

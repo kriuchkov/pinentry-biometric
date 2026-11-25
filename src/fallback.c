@@ -10,8 +10,10 @@
 #include <libgen.h>
 #include <limits.h>
 #include <mach-o/dyld.h>
+#include <sched.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,26 +31,37 @@ extern char **environ;
 /* Room for a fully percent-escaped Assuan payload plus command word. */
 #define FB_LINE_MAX (ASSUAN_LINE_MAX * 3 + 16)
 
-/* pid of the running fallback child, for fb_on_cancel; 0 if none. */
-static volatile sig_atomic_t g_child = 0;
+/* Shared with fb_on_cancel. The kernel hands a process-directed signal to
+ * any thread that does not block it, and a signal mask is per thread, so
+ * the handler cannot be kept out of a critical section by blocking: it
+ * talks to fallback_getpin through lock-free atomics instead, which are
+ * async-signal-safe. */
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "atomic_int must be lock-free");
+_Static_assert(sizeof(pid_t) == sizeof(int), "pid_t must fit an atomic_int");
+static atomic_int g_child;    /* pid of the running child; 0 if none */
+static atomic_int g_cancel;   /* cancel signal received; 0 if none */
+static atomic_int g_handlers; /* fb_on_cancel calls in progress */
 
 /* gpg-agent cancels a pinentry with SIGINT: libassuan's
  * assuan_pipe_kill_server, which gnupg agent/call-pinentry.c calls from
  * watch_sock when the client goes away (gpg interrupted) and from
  * agent_popup_message_stop. Dying alone would leave pinentry-mac's dialog
- * on screen, asking for a passphrase nobody receives any more. Only
- * async-signal-safe calls here: kill, signal, raise. */
+ * on screen, asking for a passphrase nobody receives any more. So kill the
+ * child here and leave dying to fallback_getpin, which re-raises the
+ * signal once the child is reaped. */
 static void fb_on_cancel(int sig)
 {
-    pid_t pid = (pid_t)g_child;
+    atomic_fetch_add(&g_handlers, 1);
+    atomic_store(&g_cancel, sig);
+    pid_t pid = (pid_t)atomic_load(&g_child);
     if (pid > 0)
         (void)kill(pid, SIGKILL);
-    (void)signal(sig, SIG_DFL);
-    (void)raise(sig); /* delivered once we return: the default action */
+    atomic_fetch_sub(&g_handlers, 1);
 }
 
 /* Catch sig while a child runs, saving the old action in *old. A signal we
- * were started with ignored stays ignored. */
+ * were started with ignored stays ignored. No SA_RESTART: a blocking read
+ * on the main thread returns EINTR and then EOF from the dead child. */
 static void fb_catch(int sig, struct sigaction *old)
 {
     struct sigaction sa;
@@ -58,6 +71,18 @@ static void fb_catch(int sig, struct sigaction *old)
     (void)sigaction(sig, NULL, old);
     if (old->sa_handler != SIG_IGN)
         (void)sigaction(sig, &sa, NULL);
+}
+
+/* Put back the actions fb_catch replaced, then deliver a cancel signal that
+ * arrived meanwhile to them; by default, that ends us. */
+static void fb_uncatch(const struct sigaction *old_int,
+                       const struct sigaction *old_term)
+{
+    (void)sigaction(SIGINT, old_int, NULL);
+    (void)sigaction(SIGTERM, old_term, NULL);
+    int sig = atomic_load(&g_cancel);
+    if (sig != 0)
+        (void)raise(sig);
 }
 
 static char *dup_if_exec(const char *p)
@@ -206,41 +231,47 @@ int fallback_getpin(const pe_state *st, const char *path,
      * the Security framework or anyone who started us left open. */
     posix_spawn_file_actions_adddup2(&fa, to_child[0], 0);
     posix_spawn_file_actions_adddup2(&fa, from_child[1], 1);
-    posix_spawn_file_actions_addinherit_np(&fa, 2);
+    posix_spawn_file_actions_addinherit_np(&fa, 2); /* open: secure_process_init */
 
-    /* The cancel signals stay blocked from before the spawn until g_child
-     * is set, so one that arrives in between still finds the child. exec
-     * keeps the signal mask, so the child gets the mask we started with. */
-    sigset_t cancel, oldmask;
-    sigemptyset(&cancel);
-    sigaddset(&cancel, SIGINT);
-    sigaddset(&cancel, SIGTERM);
-    struct sigaction old_int, old_term;
-    (void)sigprocmask(SIG_BLOCK, &cancel, &oldmask);
-    fb_catch(SIGINT, &old_int);
-    fb_catch(SIGTERM, &old_term);
+    /* exec keeps an ignored signal ignored. We ignore SIGPIPE and may have
+     * been started with SIGINT or SIGTERM ignored; the child starts with
+     * the defaults instead. */
+    sigset_t dfl;
+    sigemptyset(&dfl);
+    sigaddset(&dfl, SIGPIPE);
+    sigaddset(&dfl, SIGINT);
+    sigaddset(&dfl, SIGTERM);
     posix_spawnattr_t attr;
     posix_spawnattr_init(&attr);
-    posix_spawnattr_setsigmask(&attr, &oldmask);
+    posix_spawnattr_setsigdefault(&attr, &dfl);
     posix_spawnattr_setflags(&attr,
-                             POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_CLOEXEC_DEFAULT);
+                             POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_CLOEXEC_DEFAULT);
+
+    struct sigaction old_int, old_term;
+    atomic_store(&g_cancel, 0);
+    fb_catch(SIGINT, &old_int);
+    fb_catch(SIGTERM, &old_term);
 
     pid_t pid;
     char *cargv[] = { (char *)path, NULL };
     int rc = posix_spawn(&pid, path, &fa, &attr, cargv, environ);
     posix_spawnattr_destroy(&attr);
     posix_spawn_file_actions_destroy(&fa);
-    if (rc == 0)
-        g_child = pid;
-    (void)sigprocmask(SIG_SETMASK, &oldmask, NULL);
+    if (rc == 0) {
+        /* The handler stores g_cancel before it loads g_child, we store
+         * g_child before we load g_cancel: a cancel arriving around the
+         * spawn is seen by at least one side, and the child is killed. */
+        atomic_store(&g_child, pid);
+        if (atomic_load(&g_cancel) != 0)
+            (void)kill(pid, SIGKILL);
+    }
     close(to_child[0]);
     close(from_child[1]);
     int wfd = to_child[1], rfd = from_child[0];
     if (rc != 0) {
-        (void)sigaction(SIGINT, &old_int, NULL);
-        (void)sigaction(SIGTERM, &old_term, NULL);
         close(wfd);
         close(rfd);
+        fb_uncatch(&old_int, &old_term);
         return -1;
     }
 
@@ -317,14 +348,22 @@ done:
     (void)write_all(wfd, "BYE\n", 4);
     close(wfd);
     close(rfd);
-    /* Reap with the cancel signals blocked, so fb_on_cancel never fires at
-     * a pid already reaped (and possibly reused); one that arrives meanwhile
-     * is delivered with the old action once the mask is restored. */
-    (void)sigprocmask(SIG_BLOCK, &cancel, NULL);
+    /* Once reaped, the pid may belong to an unrelated process. Take it away
+     * from the handler and wait out a call that may still be using it; a
+     * later call sees 0, so on cancel we kill the child ourselves. */
+    atomic_store(&g_child, 0);
+    while (atomic_load(&g_handlers) != 0)
+        sched_yield();
+    if (atomic_load(&g_cancel) != 0) {
+        (void)kill(pid, SIGKILL);
+        if (*out_pw != NULL) { /* cancelled: nobody gets the passphrase */
+            secure_free(*out_pw, *out_len);
+            *out_pw = NULL;
+            *out_len = 0;
+            ret = 1;
+        }
+    }
     fb_reap(pid);
-    g_child = 0;
-    (void)sigaction(SIGINT, &old_int, NULL);
-    (void)sigaction(SIGTERM, &old_term, NULL);
-    (void)sigprocmask(SIG_SETMASK, &oldmask, NULL);
+    fb_uncatch(&old_int, &old_term);
     return ret;
 }

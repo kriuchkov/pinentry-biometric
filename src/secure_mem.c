@@ -3,6 +3,8 @@
 #define __STDC_WANT_LIB_EXT1__ 1
 #include <string.h>   /* memset_s — plain memset is elided by the optimizer */
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -14,6 +16,19 @@ void secure_process_init(void)
 {
     struct rlimit rl = { 0, 0 };
     (void)setrlimit(RLIMIT_CORE, &rl);  /* no core dumps with secrets */
+
+    /* If we were started with stdin, stdout or stderr closed, the next
+     * descriptor we open (a pipe to the fallback, a framework's file) would
+     * take that number: our messages would be written into it and the
+     * fallback child would inherit it as stdio. open() returns the lowest
+     * free descriptor, so /dev/null lands exactly in the gap. */
+    for (int fd = 0; fd <= 2; fd++) {
+        if (fcntl(fd, F_GETFD) == -1 && errno == EBADF) {
+            int nfd = open("/dev/null", O_RDWR);
+            if (nfd > 2)
+                (void)close(nfd);
+        }
+    }
 }
 
 /* Mapping size for a len-byte secret: whole pages, at least one. 0 on

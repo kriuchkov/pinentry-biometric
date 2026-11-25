@@ -5,7 +5,8 @@
 
 #include <stddef.h>
 
-/* One-time process hardening: setrlimit(RLIMIT_CORE, 0). Call first in main. */
+/* One-time process hardening: setrlimit(RLIMIT_CORE, 0), and /dev/null on
+ * any of fd 0-2 that is closed. Call before anything opens a descriptor. */
 void secure_process_init(void);
 
 /* Allocate len bytes (0 is allowed) on whole pages of their own, zeroed and

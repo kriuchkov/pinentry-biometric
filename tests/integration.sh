@@ -142,6 +142,18 @@ else
     if grep -qxF 'FD3 open' "$TMPD/fake.log"; then
         fail "a file descriptor beyond stdio leaked into the fallback child"
     fi
+    # run_fb starts us in the background, i.e. with SIGINT ignored, and we
+    # ignore SIGPIPE ourselves: neither may reach the child.
+    if grep -q '^SIGIGN' "$TMPD/fake.log"; then
+        fail "the fallback child inherited ignored signals: $(grep '^SIGIGN' "$TMPD/fake.log")"
+    fi
+
+    # Started with stderr closed, we must not let a pipe or any other
+    # descriptor stand in for it: the child gets /dev/null as stderr.
+    run_fb ok 'GETPIN\nBYE\n' 2>&-
+    expect_pin "relay with our stderr closed"
+    grep -qxF 'FD2 devnull' "$TMPD/fake.log" ||
+        fail "with our stderr closed, the fallback child's stderr was not /dev/null"
 
     run_fb ok 'OPTION allow-external-password-cache\nOPTION ttyname=/dev/ttys000\nSETKEYINFO --clear\nSETDESC 100%25 sure\nGETPIN\nBYE\n'
     expect_pin "relay with options set"
