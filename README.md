@@ -100,8 +100,10 @@ codesign -dv build/pinentry-biometric
 ## Install
 
 ```sh
-sudo make install               # installs to /usr/local/bin
+make && sudo make install       # installs to /usr/local/bin
 ```
+
+Build first as yourself: `install` depends on the build, so a bare `sudo make install` in a fresh checkout compiles and signs as root and leaves a root-owned `build/` behind.
 
 Install into a **root-owned** directory. The Keychain item trusts one code signature, and after every ad-hoc rebuild macOS asks you to authorize the new one (see [Signing](#signing)). A binary in a directory your own user can write to — `~/.local/bin`, or `/opt/homebrew/bin` on a typical Mac — can be swapped by any process running as you, and the next Keychain panel looks exactly like the one you expect after a rebuild; "Always Allow" then hands the passphrase to the replacement with no Touch ID at all. A Keychain panel when you have *not* just rebuilt or upgraded is the signal to press Deny. (`make install PREFIX=…` still works for testing.)
 
@@ -163,9 +165,11 @@ The user-presence policy is selectable via `--access-control=user-presence|biome
 
 CLI flags: `--version`, `--help`, `--debug` (protocol log with `D ***` payload masking — secrets never reach the log), `--fallback-pinentry <path>`, `--access-control=<mode>`.
 
-The fallback pinentry is fully trusted: it receives the passphrase you type. It is located next to our own binary and then in the standard Homebrew and GPG Suite prefixes — directories that are user-writable on a typical single-admin Mac. If that matters to you, pin it explicitly to a root-owned path with `--fallback-pinentry` in `gpg-agent.conf`.
+The fallback pinentry is fully trusted: it receives the passphrase you type. It is located next to our own binary and then in the standard Homebrew and GPG Suite prefixes — directories that are user-writable on a typical single-admin Mac. If that matters to you, pin it explicitly to a root-owned path with `--fallback-pinentry` in `gpg-agent.conf`; the path must be absolute.
 
-To disable Keychain saving entirely (the save prompt disappears):
+The Keychain is used only when gpg-agent allows an external passphrase cache, which it does by default. With `no-allow-external-cache` in `gpg-agent.conf`, every passphrase is typed into the first-entry dialog and nothing is read from or saved to the Keychain.
+
+To stop using the Keychain altogether — nothing is read from it and the save prompt disappears; items already saved stay until you delete them (see [Uninstall](#uninstall)):
 
 ```sh
 defaults write local.pinentry-biometric DisableKeychain -bool true

@@ -82,12 +82,11 @@ over in the README.
   processes — a nuisance-grade denial of service and a prompt-fatigue
   amplifier for the point above.
 
-- **Memory locking is best-effort.** Heap buffers holding secrets go through
-  `mlock`, but the return value is not checked and `RLIMIT_MEMLOCK` may deny
-  it silently; sub-page `munlock` can unlock a page shared with another live
-  allocation. Short-lived stack buffers in the protocol and fallback paths are
-  wiped with `memset_s` but never locked, so they are pageable until wiped.
-  Core dumps are disabled at startup.
+- **Memory locking is best-effort.** Heap buffers holding secrets get pages
+  of their own and go through `mlock`, but the return value is not checked
+  and `RLIMIT_MEMLOCK` may deny it silently. Short-lived stack buffers in the
+  protocol and fallback paths are wiped with `memset_s` but never locked, so
+  they are pageable until wiped. Core dumps are disabled at startup.
 
 - **No automatic migration from pinentry-mac.** An existing `GnuPG` item
   created by pinentry-mac belongs to its signature; we cannot adopt it. Delete

@@ -29,6 +29,37 @@ extern char **environ;
 /* Room for a fully percent-escaped Assuan payload plus command word. */
 #define FB_LINE_MAX (ASSUAN_LINE_MAX * 3 + 16)
 
+/* pid of the running fallback child, for fb_on_cancel; 0 if none. */
+static volatile sig_atomic_t g_child = 0;
+
+/* gpg-agent cancels a pinentry with SIGINT: libassuan's
+ * assuan_pipe_kill_server, which gnupg agent/call-pinentry.c calls from
+ * watch_sock when the client goes away (gpg interrupted) and from
+ * agent_popup_message_stop. Dying alone would leave pinentry-mac's dialog
+ * on screen, asking for a passphrase nobody receives any more. Only
+ * async-signal-safe calls here: kill, signal, raise. */
+static void fb_on_cancel(int sig)
+{
+    pid_t pid = (pid_t)g_child;
+    if (pid > 0)
+        (void)kill(pid, SIGKILL);
+    (void)signal(sig, SIG_DFL);
+    (void)raise(sig); /* delivered once we return: the default action */
+}
+
+/* Catch sig while a child runs, saving the old action in *old. A signal we
+ * were started with ignored stays ignored. */
+static void fb_catch(int sig, struct sigaction *old)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = fb_on_cancel;
+    sigemptyset(&sa.sa_mask);
+    (void)sigaction(sig, NULL, old);
+    if (old->sa_handler != SIG_IGN)
+        (void)sigaction(sig, &sa, NULL);
+}
+
 static char *dup_if_exec(const char *p)
 {
     return access(p, X_OK) == 0 ? strdup(p) : NULL;
@@ -91,22 +122,14 @@ static int fb_read_line(int fd, char *buf, size_t cap)
     return (int)n;
 }
 
-/* Percent-encode '%', CR, LF (assuan.h only exposes the decoder). */
+/* Percent-encode a C string into out (cap >= 1 bytes, NUL included),
+ * cutting it short at an escape boundary if it does not fit. */
 static void fb_encode(const char *val, char *out, size_t cap)
 {
-    static const char hex[] = "0123456789ABCDEF";
-    size_t o = 0;
-    for (const unsigned char *p = (const unsigned char *)val;
-         *p != '\0' && o + 4 < cap; p++) {
-        if (*p == '%' || *p == '\r' || *p == '\n') {
-            out[o++] = '%';
-            out[o++] = hex[*p >> 4];
-            out[o++] = hex[*p & 15];
-        } else {
-            out[o++] = (char)*p;
-        }
-    }
-    out[o] = '\0';
+    size_t used;
+    size_t n = assuan_percent_encode((const unsigned char *)val, strlen(val),
+                                     out, cap - 1, &used);
+    out[n] = '\0';
 }
 
 /* Send one command line, then read until OK/ERR, skipping S/#/empty lines.
@@ -178,18 +201,44 @@ int fallback_getpin(const pe_state *st, const char *path,
     }
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
+    /* The child gets stdio and nothing else (POSIX_SPAWN_CLOEXEC_DEFAULT
+     * below): not our pipe ends, and not whatever descriptors gpg-agent,
+     * the Security framework or anyone who started us left open. */
     posix_spawn_file_actions_adddup2(&fa, to_child[0], 0);
     posix_spawn_file_actions_adddup2(&fa, from_child[1], 1);
-    posix_spawn_file_actions_addclose(&fa, to_child[1]);
-    posix_spawn_file_actions_addclose(&fa, from_child[0]);
+    posix_spawn_file_actions_addinherit_np(&fa, 2);
+
+    /* The cancel signals stay blocked from before the spawn until g_child
+     * is set, so one that arrives in between still finds the child. exec
+     * keeps the signal mask, so the child gets the mask we started with. */
+    sigset_t cancel, oldmask;
+    sigemptyset(&cancel);
+    sigaddset(&cancel, SIGINT);
+    sigaddset(&cancel, SIGTERM);
+    struct sigaction old_int, old_term;
+    (void)sigprocmask(SIG_BLOCK, &cancel, &oldmask);
+    fb_catch(SIGINT, &old_int);
+    fb_catch(SIGTERM, &old_term);
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_setsigmask(&attr, &oldmask);
+    posix_spawnattr_setflags(&attr,
+                             POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_CLOEXEC_DEFAULT);
+
     pid_t pid;
     char *cargv[] = { (char *)path, NULL };
-    int rc = posix_spawn(&pid, path, &fa, NULL, cargv, environ);
+    int rc = posix_spawn(&pid, path, &fa, &attr, cargv, environ);
+    posix_spawnattr_destroy(&attr);
     posix_spawn_file_actions_destroy(&fa);
+    if (rc == 0)
+        g_child = pid;
+    (void)sigprocmask(SIG_SETMASK, &oldmask, NULL);
     close(to_child[0]);
     close(from_child[1]);
     int wfd = to_child[1], rfd = from_child[0];
     if (rc != 0) {
+        (void)sigaction(SIGINT, &old_int, NULL);
+        (void)sigaction(SIGTERM, &old_term, NULL);
         close(wfd);
         close(rfd);
         return -1;
@@ -243,8 +292,7 @@ int fallback_getpin(const pe_state *st, const char *path,
                    (line[2] == '\0' || line[2] == ' ')) {
             break;
         } else if (strncmp(line, "ERR ", 4) == 0) {
-            /* 83886179 = GPG_ERR_CANCELED with pinentry source bits */
-            ret = (strtoul(line + 4, NULL, 10) == 83886179UL) ? 1 : -1;
+            ret = (strtoul(line + 4, NULL, 10) == PE_ERR_CANCELED) ? 1 : -1;
             goto done;
         } else if (strncmp(line, "S ", 2) == 0 || line[0] == '#' ||
                    line[0] == '\0') {
@@ -269,6 +317,14 @@ done:
     (void)write_all(wfd, "BYE\n", 4);
     close(wfd);
     close(rfd);
+    /* Reap with the cancel signals blocked, so fb_on_cancel never fires at
+     * a pid already reaped (and possibly reused); one that arrives meanwhile
+     * is delivered with the old action once the mask is restored. */
+    (void)sigprocmask(SIG_BLOCK, &cancel, NULL);
     fb_reap(pid);
+    g_child = 0;
+    (void)sigaction(SIGINT, &old_int, NULL);
+    (void)sigaction(SIGTERM, &old_term, NULL);
+    (void)sigprocmask(SIG_SETMASK, &oldmask, NULL);
     return ret;
 }

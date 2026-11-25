@@ -97,6 +97,31 @@ assuan_percent_decode(char *s)
     return (size_t)(w - s);
 }
 
+size_t
+assuan_percent_encode(const unsigned char *data, size_t len,
+                      char *dst, size_t cap, size_t *used)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t i = 0, n = 0;
+
+    while (i < len) {
+        unsigned char c = data[i];
+        size_t need = (c == '%' || c == '\r' || c == '\n') ? 3 : 1;
+        if (n + need > cap)
+            break;                      /* never split an escape sequence */
+        if (need == 3) {
+            dst[n++] = '%';
+            dst[n++] = hex[c >> 4];
+            dst[n++] = hex[c & 0x0f];
+        } else {
+            dst[n++] = (char)c;
+        }
+        i++;
+    }
+    *used = i;
+    return n;
+}
+
 /* Write one complete text line + '\n', flush, and log it when debugging. */
 static int
 send_line(FILE *out, const char *line)
@@ -144,7 +169,6 @@ assuan_send_status(FILE *out, const char *kw, const char *text)
 int
 assuan_send_data(FILE *out, const unsigned char *data, size_t len)
 {
-    static const char hex[] = "0123456789ABCDEF";
     /* "D " plus payload must fit the Assuan line limit. A longer secret is
      * split across several D lines the way reference pinentry does —
      * truncating or refusing would hand gpg-agent a wrong passphrase. */
@@ -154,21 +178,10 @@ assuan_send_data(FILE *out, const unsigned char *data, size_t len)
     int rc = 0;
 
     do {
-        size_t n = 0;
-        while (i < len) {
-            unsigned char c = data[i];
-            size_t need = (c == '%' || c == '\r' || c == '\n') ? 3 : 1;
-            if (n + need > sizeof esc)
-                break;                  /* never split an escape sequence */
-            if (need == 3) {
-                esc[n++] = '%';
-                esc[n++] = hex[c >> 4];
-                esc[n++] = hex[c & 0x0f];
-            } else {
-                esc[n++] = (char)c;
-            }
-            i++;
-        }
+        size_t used;
+        size_t n = assuan_percent_encode(data + i, len - i, esc, sizeof esc,
+                                         &used);
+        i += used;
         if (fwrite("D ", 1, 2, out) != 2
             || (n > 0 && fwrite(esc, 1, n, out) != n)
             || fputc('\n', out) == EOF || fflush(out) != 0)

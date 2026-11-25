@@ -1,7 +1,8 @@
 # DESIGN — pinentry-biometric
 
 Goal: a from-scratch macOS pinentry small enough for full manual audit
-(~1400 lines in `src/`), C11 + Objective-C, system frameworks only.
+(~1650 lines in `src/`, comments included), C11 + Objective-C, system
+frameworks only.
 
 ## Code structure
 
@@ -28,8 +29,10 @@ Goal: a from-scratch macOS pinentry small enough for full manual audit
 - **`src/secure_mem.c` / `secure_mem.h`** — secret-memory discipline, pure C.
   `secure_process_init` disables core dumps (`setrlimit(RLIMIT_CORE, 0)`);
   `secure_alloc`/`secure_free` provide `mlock`ed allocations (best effort
-  under `RLIMIT_MEMLOCK`) that are wiped with `memset_s` — not `memset`,
-  which the optimizer may elide — before `munlock`/`free`.
+  under `RLIMIT_MEMLOCK`) on pages of their own (`mmap`, not `malloc`: a
+  shared page would be unlocked when any secret on it is freed) that are
+  wiped with `memset_s` — not `memset`, which the optimizer may elide —
+  before `munlock`/`munmap`.
 
 - **`src/keychain.m` / `keychain.h`** — Keychain layer (Security +
   LocalAuthentication). Generic password items, service `"GnuPG"`, account =
@@ -60,11 +63,17 @@ Goal: a from-scratch macOS pinentry small enough for full manual audit
   below. Locates pinentry-mac (next to our binary — via `realpath`, so a
   relative `argv[0]` cannot redirect the search to the caller's cwd — then
   `/opt/homebrew/bin`, `/usr/local/bin`, and GPG Suite's
-  `/usr/local/MacGPG2/libexec/pinentry-mac.app/Contents/MacOS/`), spawns it,
-  and drives a child Assuan session: forwards the relevant `SET*` fields and
+  `/usr/local/MacGPG2/libexec/pinentry-mac.app/Contents/MacOS/`; an explicit
+  `--fallback-pinentry` must be absolute), spawns it with nothing but stdio
+  inherited (`POSIX_SPAWN_CLOEXEC_DEFAULT`), and drives a child Assuan
+  session: forwards the relevant `SET*` fields and
   tty/locale `OPTION`s, runs one `GETPIN`, returns the passphrase in a
   `secure_alloc`ed buffer. The child is reaped on every error path — no
-  hangs.
+  hangs — and killed when we are: gpg-agent cancels a pinentry with SIGINT
+  (libassuan `assuan_pipe_kill_server`, called from `watch_sock` in gnupg
+  `agent/call-pinentry.c` when the client goes away), so while a child runs
+  SIGINT/SIGTERM take it down with us instead of leaving its dialog on
+  screen.
 
 ## Decision: proxy first entry to pinentry-mac
 
@@ -113,12 +122,19 @@ the program must fall back to the first-entry prompt without erroring.
 - **GnuPG pinentry, `pinentry/pinentry.c`** — the command table
   (`cmd_setdesc`, `cmd_getinfo`, option handling, `RESET` semantics), the
   greeting string, percent-escaping rules for `D` lines, and the Assuan line
-  length limit.
+  length limit. `cmd_getpin` reads and saves its external password cache
+  only when `allow_external_password_cache && keyinfo`; we apply the same
+  gate to the Keychain (`state_external_cache_allowed`), both for lookup and
+  for the save offer.
+- **GnuPG `agent/call-pinentry.c`** — `start_pinentry` sends `OPTION
+  allow-external-password-cache` only when `opt.allow_external_cache` is
+  set, i.e. unless the user configured `no-allow-external-cache`;
+  `agent_askpin` sends `SETKEYINFO <n|u|s>/<keyinfo>` for cacheable prompts
+  and `SETKEYINFO --clear` otherwise.
 - **pinentry-mac (GPGTools), `KeychainSupport.m` / pinentry-mac sources** —
   the Keychain item layout (service name `"GnuPG"`, account = keygrip) and
   the `S PASSWORD_FROM_CACHE` status line emitted when the passphrase is
-  served from the Keychain instead of the user (sent only when the agent
-  passed `OPTION allow-external-password-cache` and `SETKEYINFO`).
+  served from the Keychain instead of the user.
 - **libgpg-error 1.61, `gpg-error.h`** — numeric error codes and the source
   encoding (below).
 

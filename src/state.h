@@ -21,8 +21,9 @@ typedef struct {
     char notok_label[PE_FIELD_MAX];
     char error[PE_FIELD_MAX];   /* SETERROR: non-empty => agent rejected a
                                    previously returned passphrase */
-    /* SETKEYINFO: keygrip without the "<mode>/" prefix; "" if none,
-       "--clear", or any value without that prefix */
+    /* SETKEYINFO: the id without the "<mode>/" prefix — a 40-hex keygrip
+       for n/ and s/, a printable cache ID for u/; "" if none, "--clear",
+       or anything malformed or too long to store */
     char keygrip[PE_KEYGRIP_MAX];
 
     /* OPTIONs we track; unknown options are accepted and ignored */
@@ -47,5 +48,11 @@ int state_handle_option(pe_state *s, const char *args);
  * (state.c has no dependency on assuan.c). Returns 0 if the command was
  * recognized and stored, -1 if `cmd` is not a known SET* command. */
 int state_handle_set(pe_state *s, const char *cmd, char *args);
+
+/* True if GETPIN may use the Keychain at all, to read or to save: the agent
+ * sent OPTION allow-external-password-cache — which gpg-agent does unless
+ * configured with no-allow-external-cache — and a cacheable SETKEYINFO.
+ * The same gate reference pinentry's cmd_getpin puts on its cache. */
+bool state_external_cache_allowed(const pe_state *s);
 
 #endif /* PE_STATE_H */

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 pinentry-biometric: a from-scratch macOS pinentry for gpg-agent that stores GPG
 passphrases in the Keychain behind Touch ID. Design goals that constrain all
-changes: full manual auditability (~1300 lines in `src/`), C11 + Objective-C,
+changes: full manual auditability (~1650 lines in `src/`), C11 + Objective-C,
 **no third-party build dependencies** — only macOS system frameworks
 (Foundation, Security, LocalAuthentication, CoreFoundation; deliberately no
 AppKit or CoreGraphics). The binary must never link network frameworks

@@ -2,8 +2,10 @@
  * Links only state.c + secure_mem.c; no assuan.c dependency.
  * SPDX-License-Identifier: MIT */
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "../src/secure_mem.h"
 #include "../src/state.h"
@@ -68,33 +70,46 @@ static void test_set_fields(void)
     PASS("set_fields");
 }
 
+#define GRIP "8CF2B57D48F5D42A6D1B4A6A2C1AC1D6E5F30583"
+
+/* Set a valid keygrip, then send `val`: it must leave the keygrip empty. */
+static void assert_keyinfo_clears(const char *val)
+{
+    char ki[] = "n/" GRIP, buf[PE_FIELD_MAX];
+    assert(state_handle_set(&st, "SETKEYINFO", ki) == 0);
+    assert(strcmp(st.keygrip, GRIP) == 0);
+    snprintf(buf, sizeof buf, "%s", val);
+    assert(state_handle_set(&st, "SETKEYINFO", buf) == 0);
+    assert(st.keygrip[0] == '\0');
+}
+
 static void test_setkeyinfo(void)
 {
     state_init(&st);
-    char ki[] = "n/8CF2B57D48F5D42A6D1B4A6A2C1AC1D6E5F30583";
+    /* n/ and s/ carry a keygrip: 40 hex digits, either case. */
+    char ki[] = "s/" GRIP;
     assert(state_handle_set(&st, "SETKEYINFO", ki) == 0);
-    assert(strcmp(st.keygrip, "8CF2B57D48F5D42A6D1B4A6A2C1AC1D6E5F30583") == 0);
-    char clear[] = "--";
-    assert(state_handle_set(&st, "SETKEYINFO", clear) == 0);
-    assert(st.keygrip[0] == '\0');
-    char ki2[] = "u/DEADBEEF";  /* any single "<char>/" prefix is stripped */
-    assert(state_handle_set(&st, "SETKEYINFO", ki2) == 0);
-    assert(strcmp(st.keygrip, "DEADBEEF") == 0);
-    char empty[] = "";
-    assert(state_handle_set(&st, "SETKEYINFO", empty) == 0);
-    assert(st.keygrip[0] == '\0');
-    /* What gpg-agent actually sends before uncacheable prompts (new
-     * passphrase and its re-entry): must clear, never become a keygrip. */
-    char ki3[] = "n/DEADBEEF";
-    assert(state_handle_set(&st, "SETKEYINFO", ki3) == 0);
-    char clear_long[] = "--clear";
-    assert(state_handle_set(&st, "SETKEYINFO", clear_long) == 0);
-    assert(st.keygrip[0] == '\0');
-    char ki4[] = "n/DEADBEEF";
-    assert(state_handle_set(&st, "SETKEYINFO", ki4) == 0);
-    char noprefix[] = "DEADBEEF";   /* no "<mode>/" prefix: not a keyinfo */
-    assert(state_handle_set(&st, "SETKEYINFO", noprefix) == 0);
-    assert(st.keygrip[0] == '\0');
+    assert(strcmp(st.keygrip, GRIP) == 0);
+    char lower[] = "n/8cf2b57d48f5d42a6d1b4a6a2c1ac1d6e5f30583";
+    assert(state_handle_set(&st, "SETKEYINFO", lower) == 0);
+    assert(strcmp(st.keygrip, lower + 2) == 0);
+    /* u/ carries a GET_PASSPHRASE cache ID, e.g. gpg's symmetric "S<salt>" */
+    char sym[] = "u/S0123456789ABCDEF";
+    assert(state_handle_set(&st, "SETKEYINFO", sym) == 0);
+    assert(strcmp(st.keygrip, "S0123456789ABCDEF") == 0);
+    /* What gpg-agent sends before uncacheable prompts (new passphrase and
+     * its re-entry): must clear, never become a keygrip. */
+    assert_keyinfo_clears("--clear");
+    assert_keyinfo_clears("--");
+    assert_keyinfo_clears("");
+    assert_keyinfo_clears(GRIP);                 /* no "<mode>/" prefix */
+    assert_keyinfo_clears("x/" GRIP);            /* unknown mode */
+    assert_keyinfo_clears("n/");                 /* empty id */
+    assert_keyinfo_clears("n/DEADBEEF");         /* too short for a grip */
+    assert_keyinfo_clears("n/" GRIP "00");       /* too long for a grip */
+    assert_keyinfo_clears("n/8CF2B57D48F5D42A6D1B4A6A2C1AC1D6E5F3058G");
+    assert_keyinfo_clears("u/two words");        /* not one word */
+    assert_keyinfo_clears("u/tab\there");
     PASS("setkeyinfo");
 }
 
@@ -103,10 +118,11 @@ static void test_reset_preserves_options(void)
     state_init(&st);
     assert(state_handle_option(&st, "ttyname=/dev/ttys009") == 0);
     assert(state_handle_option(&st, "allow-external-password-cache") == 0);
-    char desc[] = "d", err[] = "e", ki[] = "n/ABCD";
+    char desc[] = "d", err[] = "e", ki[] = "n/" GRIP;
     assert(state_handle_set(&st, "SETDESC", desc) == 0);
     assert(state_handle_set(&st, "SETERROR", err) == 0);
     assert(state_handle_set(&st, "SETKEYINFO", ki) == 0);
+    assert(st.keygrip[0] != '\0');
     state_reset(&st);
     assert(st.desc[0] == '\0' && st.prompt[0] == '\0' && st.title[0] == '\0');
     assert(st.ok_label[0] == '\0' && st.cancel_label[0] == '\0');
@@ -134,9 +150,9 @@ static void test_set_command_case_insensitive(void)
     char desc[] = "hello";
     assert(state_handle_set(&st, "setdesc", desc) == 0);
     assert(strcmp(st.desc, "hello") == 0);
-    char grip[] = "n/ABCDEF0123";
+    char grip[] = "n/" GRIP;
     assert(state_handle_set(&st, "SetKeyInfo", grip) == 0);
-    assert(strcmp(st.keygrip, "ABCDEF0123") == 0);
+    assert(strcmp(st.keygrip, GRIP) == 0);
     PASS("set_command_case_insensitive");
 }
 
@@ -148,11 +164,34 @@ static void test_oversized_args_truncated(void)
     state_init(&st);
     assert(state_handle_set(&st, "SETDESC", big) == 0);
     assert(strlen(st.desc) == PE_FIELD_MAX - 1);  /* truncated, NUL-terminated */
-    big[0] = 'n';                   /* a keyinfo needs the "<mode>/" prefix */
+    /* A keyinfo id is rejected, never truncated: two long ids sharing a
+     * prefix must not map to one Keychain item. u/ is the mode whose ids
+     * have no fixed length; the longest that fits is stored whole. */
+    big[0] = 'u';
     big[1] = '/';
+    big[2 + PE_KEYGRIP_MAX] = '\0';             /* id one byte too long */
+    assert(state_handle_set(&st, "SETKEYINFO", big) == 0);
+    assert(st.keygrip[0] == '\0');
+    big[2 + PE_KEYGRIP_MAX - 1] = '\0';         /* the longest that fits */
     assert(state_handle_set(&st, "SETKEYINFO", big) == 0);
     assert(strlen(st.keygrip) == PE_KEYGRIP_MAX - 1);
     PASS("oversized_args_truncated");
+}
+
+/* Keychain use needs both the agent's allow-external-password-cache and a
+ * keyinfo, as in reference pinentry's cmd_getpin. */
+static void test_external_cache_gate(void)
+{
+    state_init(&st);
+    char ki[] = "n/8CF2B57D48F5D42A6D1B4A6A2C1AC1D6E5F30583";
+    assert(state_handle_set(&st, "SETKEYINFO", ki) == 0);
+    assert(!state_external_cache_allowed(&st)); /* no-allow-external-cache */
+    assert(state_handle_option(&st, "allow-external-password-cache") == 0);
+    assert(state_external_cache_allowed(&st));
+    char clear[] = "--clear";
+    assert(state_handle_set(&st, "SETKEYINFO", clear) == 0);
+    assert(!state_external_cache_allowed(&st)); /* uncacheable prompt */
+    PASS("external_cache_gate");
 }
 
 static void test_secure_mem(void)
@@ -167,6 +206,26 @@ static void test_secure_mem(void)
     secure_free(p, 64);
     secure_free(NULL, 16);  /* safe on NULL */
     secure_wipe(NULL, 0);
+
+    /* Two small secrets never share a page: munlock on one must not
+     * unlock the other. */
+    uintptr_t pg = (uintptr_t)getpagesize();
+    unsigned char *a = secure_alloc(16), *b = secure_alloc(16);
+    assert(a && b);
+    assert((uintptr_t)a % pg == 0 && (uintptr_t)b % pg == 0);
+    assert((uintptr_t)a / pg != (uintptr_t)b / pg);
+    secure_free(a, 16);
+    secure_free(b, 16);
+
+    /* Zero length (keychain_lookup on an empty item) and multi-page. */
+    unsigned char *z = secure_alloc(0);
+    assert(z != NULL);
+    secure_free(z, 0);
+    size_t big = (size_t)pg * 2 + 1;
+    unsigned char *m = secure_alloc(big);
+    assert(m != NULL && m[big - 1] == 0);
+    memset(m, 0x5A, big);
+    secure_free(m, big);
     PASS("secure_mem");
 }
 
@@ -181,6 +240,7 @@ int main(void)
     test_unknown_set_command();
     test_set_command_case_insensitive();
     test_oversized_args_truncated();
+    test_external_cache_gate();
     test_secure_mem();
     printf("all tests passed\n");
     return 0;

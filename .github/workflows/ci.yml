@@ -5,9 +5,15 @@
 # that matters most: it fails if the binary loses Hardened Runtime, which
 # would silently reduce the Touch ID requirement to decoration.
 #
-# Note what CI cannot cover: there is no Touch ID sensor and no Aqua session
-# on a runner, so GETPIN, the Keychain and the biometric prompt are only
-# exercised by hand (INTERACTIVE=1 tests/integration.sh).
+# Note what CI cannot cover: there is no Touch ID sensor on a runner, so the
+# Keychain and the biometric prompt are only exercised by hand
+# (INTERACTIVE=1 tests/integration.sh). The first-entry fallback is driven
+# against a scripted pinentry; GETPIN refuses to run without a GUI session,
+# which GitHub's macOS runners do have, so watch for that step turning into
+# SKIPPED if the runner image changes.
+#
+# Actions are pinned to a commit, not a movable tag: this pipeline vouches
+# for a binary that guards a passphrase. The comment names the release.
 name: CI
 
 on:
@@ -38,7 +44,7 @@ jobs:
           - os: macos-15-intel
             arch: Intel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Build
         run: make
@@ -75,7 +81,7 @@ jobs:
     name: clang static analyzer
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # The analyzer exits 0 even when it reports findings — including with
       # -Werror — so the diagnostics have to be inspected, not the exit code.
@@ -100,6 +106,6 @@ jobs:
     name: shellcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Check test scripts
         run: shellcheck tests/*.sh
