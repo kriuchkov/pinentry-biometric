@@ -1,6 +1,5 @@
-# Actions in .github/workflows are pinned to commits. Dependabot proposes
-# new releases as pull requests, updating the SHA and its "# vX.Y.Z"
-# comment together.
+# Proposes new major versions of the actions in .github/workflows (the
+# workflow uses major tags such as @v4) as pull requests.
 version: 2
 updates:
   - package-ecosystem: github-actions
